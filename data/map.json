@@ -1,0 +1,102 @@
+{
+  "width": 54,
+  "height": 40,
+  "start": [4, 5],
+  "vision": 5,
+
+  "_note": "房間的 height 是地板基準高度；obstacles 是擋路的家具數量，platforms 是會墊高一層的區塊數量。兩者都在房間範圍內隨機擺放。",
+
+  "rooms": [
+    {"id":"玄關", "rect":[0,0,10,12], "color":"#5a6270", "terrain":"普通", "height":0,
+     "enemy_pool":["dust","ant"], "enemy_mult":0.85, "reward_mult":0.8, "win_hp":2, "win_xp":0,
+     "perk":"門口最乾淨：怪最弱，打贏回 2 點血，但筆芯只有八成",
+     "obstacles":4, "platforms":1,
+     "quota":{"monster_small":3, "chest":2, "rest":1}},
+
+    {"id":"客廳", "rect":[10,0,16,12], "color":"#7a5a42", "terrain":"地毯", "height":0,
+     "enemy_pool":["dust","hairball"], "enemy_mult":1.0, "reward_mult":1.0, "win_hp":0, "win_xp":1,
+     "perk":"沙發底下的灰塵與毛球：打贏多拿 1 點抽屜經驗",
+     "obstacles":9, "platforms":3,
+     "quota":{"monster_small":4, "monster_mid":4, "chest":2, "rest":1, "shop":1}},
+
+    {"id":"廚房", "rect":[26,0,12,12], "color":"#6f6236", "terrain":"濕滑地板", "height":0,
+     "enemy_pool":["roach","ant"], "enemy_mult":1.05, "reward_mult":1.25, "win_hp":0, "win_xp":0,
+     "perk":"食物引來蟑螂與螞蟻：又快又多，但筆芯報酬 ×1.25",
+     "obstacles":8, "platforms":4,
+     "quota":{"monster_mid":5, "monster_big":1, "chest":2}},
+
+    {"id":"餐廳", "rect":[38,0,16,12], "color":"#6a4f3a", "terrain":"普通", "height":0,
+     "enemy_pool":["ant","roach"], "enemy_mult":1.0, "reward_mult":1.1, "win_hp":0, "win_xp":1,
+     "perk":"餐桌底下的碎屑：螞蟻多，打贏多拿 1 點經驗",
+     "obstacles":7, "platforms":3,
+     "quota":{"monster_small":2, "monster_mid":4, "chest":2, "copier":1}},
+
+    {"id":"走廊", "rect":[0,12,54,4], "color":"#4a4f5c", "terrain":"普通", "height":0,
+     "enemy_pool":["dust","ant"], "enemy_mult":0.95, "reward_mult":0.9, "win_hp":0, "win_xp":0,
+     "perk":"又長又空的走廊：怪不強，但也沒什麼好拿的",
+     "obstacles":6, "platforms":0,
+     "quota":{"monster_small":4, "monster_mid":2, "chest":1, "rest":1}},
+
+    {"id":"書房", "rect":[0,16,14,12], "color":"#44527a", "terrain":"書桌高處", "height":0,
+     "enemy_pool":["mold","dust"], "enemy_mult":1.0, "reward_mult":0.9, "win_hp":0, "win_xp":2,
+     "perk":"書堆裡的霉與灰：筆芯少一點，但打贏多拿 2 點抽屜經驗",
+     "obstacles":7, "platforms":5,
+     "quota":{"monster_small":2, "monster_mid":4, "shop":1, "copier":1, "chest":2}},
+
+    {"id":"主臥", "rect":[14,16,14,12], "color":"#5a4466", "terrain":"地毯", "height":0,
+     "enemy_pool":["dust","hairball"], "enemy_mult":1.1, "reward_mult":1.2, "win_hp":0, "win_xp":0,
+     "perk":"床底下積了很多灰：怪偏強，但筆芯報酬 ×1.2",
+     "obstacles":8, "platforms":3,
+     "quota":{"monster_mid":4, "monster_big":2, "chest":2, "rest":1}},
+
+    {"id":"浴室", "rect":[28,16,10,12], "color":"#3a6270", "terrain":"濕滑地板", "height":0,
+     "enemy_pool":["mold","spore"], "enemy_mult":1.0, "reward_mult":1.1, "win_hp":3, "win_xp":0,
+     "perk":"潮濕長黴，但可以順手洗一洗：打贏回 3 點血",
+     "obstacles":5, "platforms":3,
+     "quota":{"monster_mid":4, "monster_big":1, "rest":1, "chest":1}},
+
+    {"id":"兒童房", "rect":[38,16,16,12], "color":"#4a6b52", "terrain":"地毯", "height":0,
+     "enemy_pool":["dust","spore"], "enemy_mult":1.05, "reward_mult":1.15, "win_hp":0, "win_xp":1,
+     "perk":"玩具堆裡什麼都有：報酬和經驗都還不錯",
+     "obstacles":10, "platforms":4,
+     "quota":{"monster_small":3, "monster_mid":4, "chest":3, "shop":1}},
+
+    {"id":"後廊", "rect":[0,28,54,4], "color":"#454a56", "terrain":"普通", "height":0,
+     "enemy_pool":["roach","mold"], "enemy_mult":1.05, "reward_mult":1.0, "win_hp":0, "win_xp":0,
+     "perk":"通往後面的走廊：沒什麼特別的",
+     "obstacles":6, "platforms":0,
+     "quota":{"monster_mid":4, "chest":1, "rest":1}},
+
+    {"id":"儲藏室", "rect":[0,32,18,8], "color":"#63425a", "terrain":"普通", "height":0,
+     "enemy_pool":["hairball","mold","dust"], "enemy_mult":1.2, "reward_mult":1.6, "win_hp":0, "win_xp":0,
+     "perk":"最久沒整理：怪強度 ×1.2，但筆芯報酬 ×1.6",
+     "obstacles":11, "platforms":5,
+     "quota":{"monster_mid":2, "monster_big":5, "shop":1, "chest":3}},
+
+    {"id":"洗衣間", "rect":[18,32,14,8], "color":"#3f5a66", "terrain":"濕滑地板", "height":0,
+     "enemy_pool":["mold","spore"], "enemy_mult":1.15, "reward_mult":1.35, "win_hp":2, "win_xp":0,
+     "perk":"又濕又悶：怪偏強，但筆芯報酬 ×1.35，打贏回 2 血",
+     "obstacles":6, "platforms":2,
+     "quota":{"monster_mid":3, "monster_big":2, "chest":2}},
+
+    {"id":"陽台", "rect":[32,32,22,8], "color":"#5c6b43", "terrain":"普通", "height":1,
+     "enemy_pool":["spore","dust"], "enemy_mult":1.1, "reward_mult":1.4, "win_hp":0, "win_xp":2,
+     "perk":"外面吹進來的孢子：整層墊高（高地有射程優勢），報酬與經驗都高",
+     "obstacles":7, "platforms":4,
+     "quota":{"monster_mid":3, "monster_big":3, "chest":3, "copier":1}}
+  ],
+
+  "terrain_overrides": [],
+
+  "monster_tiers": {
+    "monster_small": {"label":"小群", "count":5,  "mult":0.9,  "reward":[3,5]},
+    "monster_mid":   {"label":"中群", "count":9,  "mult":1.05, "reward":[5,8]},
+    "monster_big":   {"label":"大群", "count":13, "mult":1.2,  "reward":[9,14]}
+  },
+
+  "segments": [
+    {"name":"早上", "seconds":420, "occupied":["浴室","廚房","餐廳"], "desc":"家人起床梳洗、做早餐"},
+    {"name":"下午", "seconds":900, "occupied":["書房","兒童房"],      "desc":"爸爸在書房加班、小孩在房間寫作業"},
+    {"name":"晚上", "seconds":420, "occupied":["客廳","廚房","主臥"], "desc":"全家回來吃飯、看電視"}
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "文具": {"color":"#4a90d9","role":"遠程輸出","tiers":[
+    {"count":3,"desc":"攻擊降低敵人護甲 10（最多 3 層）","fx":{"shred_armor":10}},
+    {"count":5,"desc":"攻擊降低敵人護甲 25（最多 3 層）","fx":{"shred_armor":25}}
+  ]},
+  "家具家電": {"color":"#c98a3c","role":"前排坦克","tiers":[
+    {"count":3,"desc":"開場護盾 200","fx":{"shield":200}},
+    {"count":5,"desc":"開場護盾 450","fx":{"shield":450}}
+  ]},
+  "食物": {"color":"#6ab04c","role":"回復、成長","tiers":[
+    {"count":3,"desc":"每場勝利後，食物永久生命 +5%","fx":{"perm_hp_pct":5}},
+    {"count":5,"desc":"每場勝利後，食物永久生命 +12%","fx":{"perm_hp_pct":12}}
+  ]},
+  "運動用品": {"color":"#e0533d","role":"近戰突擊","tiers":[
+    {"count":3,"desc":"攻速 +15%","fx":{"aspd_pct":15}},
+    {"count":5,"desc":"攻速 +35%","fx":{"aspd_pct":35}}
+  ]},
+  "清潔用品": {"color":"#3fbfbf","role":"輔助、淨化","tiers":[
+    {"count":3,"desc":"每 5 秒淨化全隊暈眩","fx":{"cleanse":true}},
+    {"count":5,"desc":"每 5 秒淨化全隊暈眩，並回復 10% 生命","fx":{"cleanse":true,"pulse_heal_pct":10}}
+  ]},
+  "害蟲": {"color":"#8e44ad","role":"敵人","tiers":[]}
+}

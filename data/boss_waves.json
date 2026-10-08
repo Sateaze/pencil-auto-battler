@@ -1,0 +1,7 @@
+[
+  {"label":"孢子先遣","enemies":[{"id":"spore","count":8,"mult":1.3}]},
+  {"label":"黴菌部隊","enemies":[{"id":"mold","count":6,"mult":1.5},{"id":"spore","count":5,"mult":1.5}]},
+  {"label":"菌落合體","enemies":[{"id":"hairball","count":4,"mult":1.7},{"id":"mold","count":5,"mult":1.7}]},
+  {"label":"本體現身","enemies":[{"id":"moldking","count":1,"mult":1.2},{"id":"spore","count":6,"mult":1.6}]},
+  {"label":"最終型態","enemies":[{"id":"moldking","count":1,"mult":1.6},{"id":"mold","count":6,"mult":1.8},{"id":"spore","count":4,"mult":1.8}]}
+]

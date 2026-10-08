@@ -1,0 +1,27 @@
+{
+  "_rule": "特徵跨流派存在，湊到 2 / 4 件觸發，但必須來自至少 2 個不同大流派。",
+  "冰冷": {"role":"減速、凍結", "tiers":[
+    {"count":2, "desc":"攻擊使敵人移速 −20%", "fx":{"slow_pct":20}},
+    {"count":4, "desc":"移速 −40%，每第 4 次攻擊凍結 1 秒", "fx":{"slow_pct":40, "freeze_every":4, "freeze_dur":1.0}}
+  ]},
+  "高溫": {"role":"灼燒", "tiers":[
+    {"count":2, "desc":"攻擊附加灼燒，每秒 2% 最大生命", "fx":{"burn_pct":2.0, "burn_max":1}},
+    {"count":4, "desc":"灼燒可疊加 3 層", "fx":{"burn_pct":2.0, "burn_max":3}}
+  ]},
+  "電力": {"role":"能量", "tiers":[
+    {"count":2, "desc":"能量回復 +20%", "fx":{"energy_pct":20}},
+    {"count":4, "desc":"能量回復 +50%", "fx":{"energy_pct":50}}
+  ]},
+  "黏性": {"role":"定身", "tiers":[
+    {"count":2, "desc":"每第 3 次攻擊定身 0.5 秒（定身只能站著打）", "fx":{"root_every":3, "root_dur":0.5}},
+    {"count":4, "desc":"每第 3 次攻擊定身 1 秒", "fx":{"root_every":3, "root_dur":1.0}}
+  ]},
+  "圓滾滾": {"role":"開場衝撞", "tiers":[
+    {"count":2, "desc":"開場翻滾衝撞最近的敵人，造成 150 傷害", "fx":{"charge_damage":150}},
+    {"count":4, "desc":"衝撞傷害提高到 320", "fx":{"charge_damage":320}}
+  ]},
+  "輕便": {"role":"探索移速", "tiers":[
+    {"count":2, "desc":"探索時每走一格扣的時間 −15%", "fx":{"step_cut":15}},
+    {"count":4, "desc":"探索時每走一格扣的時間 −30%", "fx":{"step_cut":30}}
+  ]}
+}
