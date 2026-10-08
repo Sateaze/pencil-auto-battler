@@ -4,6 +4,7 @@ extends RefCounted
 
 const DB = preload("res://scripts/db.gd")
 const GameState = preload("res://scripts/game_state.gd")
+const BattleSim = preload("res://scripts/sim/battle_sim.gd")
 
 const STEP_SECONDS := 3.0        # 每走一格扣的時間（地圖變大後從 5 秒下修）
 const PREP_SECONDS := 30.0       # 擺陣時間，也算進時段
@@ -378,25 +379,7 @@ func finish_encounter(cell: Vector2i, result: Dictionary, retreated: bool,
 			spent += elapsed
 		battle_seconds += elapsed
 		if result.winner == 0:
-			var tier: Dictionary = DB.map.monster_tiers[cells[cell].key]
-			var room := room_def(cell)
-			var gain := int(rng.randi_range(int(tier.reward[0]), int(tier.reward[1]))
-					* float(room.get("reward_mult", 1.0)))
-			gs.mm += gain
-			mm_earned += gain
-			cells.erase(cell)
-			var bonus: Array = []
-			var heal := int(room.get("win_hp", 0))
-			if heal > 0:
-				hp = mini(MAX_HP, hp + heal)
-				bonus.append("回 %d 血" % heal)
-			var xp := int(room.get("win_xp", 0))
-			if xp > 0:
-				gs.add_xp(xp)
-				bonus.append("抽屜經驗 +%d" % xp)
-			_log("打贏 %s（%s）：獲得 %d mm%s（花了 %.0f 秒）" % [
-					tier.label, room_at.get(cell, ""), gain,
-					"，" + "、".join(bonus) if not bonus.is_empty() else "", elapsed])
+			_reward(cell, elapsed)
 		else:
 			_hurt(LOSE_HP, "打輸了：扣 %d 點血量，怪群留在原地" % LOSE_HP)
 	# 刷新費用與升星獎勵都以「一場戰鬥」為單位
@@ -404,6 +387,76 @@ func finish_encounter(cell: Vector2i, result: Dictionary, retreated: bool,
 	gs.drop_merge_reward()
 	time_left = maxf(0.0, time_left - spent)
 	_check_time()
+
+
+## 打贏怪群的獎勵：筆芯（依房間倍率）、房間特性的回血／經驗，並清掉該格
+func _reward(cell: Vector2i, secs: float) -> void:
+	var tier: Dictionary = DB.map.monster_tiers[cells[cell].key]
+	var room := room_def(cell)
+	var gain := int(rng.randi_range(int(tier.reward[0]), int(tier.reward[1]))
+			* float(room.get("reward_mult", 1.0)))
+	gs.mm += gain
+	mm_earned += gain
+	cells.erase(cell)
+	var bonus: Array = []
+	var heal := int(room.get("win_hp", 0))
+	if heal > 0:
+		hp = mini(MAX_HP, hp + heal)
+		bonus.append("回 %d 血" % heal)
+	var xp := int(room.get("win_xp", 0))
+	if xp > 0:
+		gs.add_xp(xp)
+		bonus.append("抽屜經驗 +%d" % xp)
+	_log("打贏 %s（%s）：獲得 %d mm%s（花了 %.0f 秒）" % [
+			tier.label, room_at.get(cell, ""), gain,
+			"，" + "、".join(bonus) if not bonus.is_empty() else "", secs])
+
+
+# ── 就地開打 ────────────────────────────────────────────────
+# 遊戲畫面和自動測試都走這兩個函式，才不會「測的是一套、玩的是另一套」。
+
+## 切戰場、在玩家周圍展開陣形、把整場算完。畫面之後只負責播放。
+func begin_field_battle(cell: Vector2i) -> Dictionary:
+	var arena := build_arena(cell)
+	var used: Dictionary = {}
+	var allies: Array = gs.field_player_descs(arena, pos, used)
+	var foes: Array = gs.field_enemy_descs(encounter_groups(cell), arena, cell, used)
+	var sim := BattleSim.new()
+	sim.setup(gs.rng.randi(), allies, foes, battle_terrain_fx(), arena)
+	var result: Dictionary = sim.run()
+	return {"sim": sim, "arena": arena, "result": result, "cell": cell,
+			"seconds": float(result.ticks) * BattleSim.DT}
+
+
+## 結算就地開打。played 是實際播放掉的秒數 —— 時間在播放過程中已經即時扣掉了，這裡不再扣。
+## 時段時間在整場打完之前就用完，視為「被打斷」：不給獎勵、不扣血、怪群留著。
+## （以前會直接套用整場算好的結果，播到一半時間到了也照拿勝利獎勵。）
+## 回傳 "win" / "lose" / "retreat" / "interrupted"。
+func end_field_battle(battle: Dictionary, played: float, retreated: bool) -> String:
+	var cell: Vector2i = battle.cell
+	var result: Dictionary = battle.result
+	var full: float = float(battle.seconds)
+	battles_fought += 1
+	battle_seconds += minf(played, full)
+	var outcome := ""
+	if retreated:
+		outcome = "retreat"
+		_hurt(RETREAT_HP, "撤退：扣 %d 點血量，怪群留在原地" % RETREAT_HP)
+	elif played + 0.001 < full:
+		outcome = "interrupted"
+		_log("時間到了，戰鬥被打斷：沒有獎勵，怪群留在原地")
+	elif int(result.winner) == 0:
+		outcome = "win"
+		gs.on_encounter_won()
+		_reward(cell, full)
+	else:
+		outcome = "lose"
+		_hurt(LOSE_HP, "打輸了：扣 %d 點血量，怪群留在原地" % LOSE_HP)
+	# 刷新費用與升星獎勵都以「一場戰鬥」為單位
+	gs.reset_refresh()
+	gs.drop_merge_reward()
+	_check_time()
+	return outcome
 
 
 # ── 血量與時段 ──────────────────────────────────────────────

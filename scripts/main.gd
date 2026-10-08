@@ -39,7 +39,7 @@ var tick_f := 0.0
 var speed_idx := 1
 var retreated := false
 var encounter_cell := Vector2i(-1, -1)
-var field_arena: Dictionary = {}
+var field: Dictionary = {}        # 進行中的就地開打（MapState.begin_field_battle 的回傳）
 var pending_enemies: Array = []
 var pending_terrain: Dictionary = {}
 var pending_label := ""
@@ -254,18 +254,13 @@ func _on_attack_requested(cell: Vector2i) -> void:
 		ms._log("陣形是空的！先按「整備」把棋子放上場再打。")
 		explore.refresh()
 		return
-	encounter_cell = cell
-	field_arena = ms.build_arena(cell)
-	var used: Dictionary = {}
-	var allies := gs.field_player_descs(field_arena, ms.pos, used)
-	var foes := gs.field_enemy_descs(ms.encounter_groups(cell), field_arena, cell, used)
-	var sim := BattleSim.new()
-	sim.setup(gs.rng.randi(), allies, foes, ms.battle_terrain_fx(), field_arena)
-	last_result = sim.run()
+	field = ms.begin_field_battle(cell)
 	retreated = false
 	phase = "field"
-	explore.battle = sim
-	explore.battle_origin = field_arena.origin
+	explore.formation_mode = false         # 佈陣中直接出擊的話，戰鬥時就不用再算佈陣預覽
+	explore.battle = field.sim
+	explore.battle_origin = field.arena.origin
+	explore.battle_cell = cell
 	explore.battle_tick = 0.0
 	explore.btn_retreat.visible = true
 	explore.refresh()
@@ -280,12 +275,11 @@ func _on_field_retreat() -> void:
 
 func _finish_field_battle() -> void:
 	phase = "explore"
+	var played: float = explore.battle_tick * BattleSim.DT
 	explore.battle = null
 	explore.btn_retreat.visible = false
-	if not retreated and last_result.winner == 0:
-		gs.on_encounter_won()
-	# 時間已經在播放過程中即時流掉了，這裡不再重複扣
-	ms.finish_encounter(encounter_cell, last_result, retreated, false)
+	# 時間在播放過程中已經即時扣掉；播到一半時間用完的話，這裡會判成「被打斷」
+	ms.end_field_battle(field, played, retreated)
 	if ms.day_over:
 		_on_day_finished()
 		return
@@ -608,7 +602,7 @@ func _process(delta: float) -> void:
 		if explore.battle_tick >= last or ms.time_left <= 0.0:
 			_finish_field_battle()
 		else:
-			explore.refresh()
+			explore.update_battle_hud()    # 戰鬥中只更新時間列，不必每幀重建整個面板
 		return
 	if phase == "battle" and sim != null:
 		tick_f += delta * SPEEDS[speed_idx] / BattleSim.DT

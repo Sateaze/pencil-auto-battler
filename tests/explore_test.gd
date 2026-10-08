@@ -77,19 +77,20 @@ func _play(seed_value: int, verbose: bool) -> Dictionary:
 		if not adj.is_empty() and ms.hp > MapState.LOSE_HP:
 			_shop_and_arrange(gs)
 			var label: String = ms.cell_at(adj[0]).label
-			var sim = gs.make_sim(ms.encounter_enemies(adj[0]), ms.battle_terrain_fx())
-			var res: Dictionary = sim.run()
-			# 會玩的人看得出打不贏就會撤退，而不是硬打到底
-			var retreat: bool = res.winner != 0
-			if not retreat:
-				gs.on_encounter_won()
-			else:
+			# 跟遊戲走同一套：在大地圖上切戰場、展開陣形、時間即時流逝
+			var battle: Dictionary = ms.begin_field_battle(adj[0])
+			# 會玩的人看得出打不贏就會撤退（開打一秒就撤），而不是硬打到底
+			var retreat: bool = int(battle.result.winner) != 0
+			var played: float = 1.0 if retreat else float(battle.seconds)
+			played = minf(played, ms.time_left)      # 時段時間用完就被打斷
+			ms.time_left -= played
+			var outcome: String = ms.end_field_battle(battle, played, retreat)
+			if outcome != "win":
 				avoid[adj[0]] = true
-			ms.finish_encounter(adj[0], res, retreat)
 			if verbose:
-				print("  %s %s 於「%s」：剩 %d 秒 血 %d 筆芯 %d" % [
-					"撤退" if retreat else "打贏", label,
-					ms.terrain_of(ms.pos), int(ms.time_left), ms.hp, gs.mm])
+				print("  %s %s 於「%s」：%.0f 秒，剩 %d 秒 血 %d 筆芯 %d" % [
+					{"win": "打贏", "lose": "打輸", "retreat": "撤退", "interrupted": "被打斷"}[outcome],
+					label, ms.terrain_of(ms.pos), played, int(ms.time_left), ms.hp, gs.mm])
 			continue
 		var target = _pick_target(ms, avoid)
 		if target == null:

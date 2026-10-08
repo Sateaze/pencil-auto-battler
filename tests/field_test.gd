@@ -113,13 +113,36 @@ func _run() -> void:
 			ms.room_at.get(cell, "？"), ms.cell_at(cell).label,
 			allies.size(), foes.size(), float(res.ticks) * 0.1, res.winner == 0])
 
-	# 打贏之後怪群格要被清掉，而且不該再扣一次時間（時間是播放時即時流掉的）
-	var before := ms.time_left
-	ms.finish_encounter(cell, res, false, false)
-	_check(is_equal_approx(ms.time_left, before),
-			"就地開打不該在結算時再扣時間（%.1f → %.1f）" % [before, ms.time_left])
-	if res.winner == 0:
+	_test_end_field_battle(gs, ms)
+
+
+## 就地開打的結算：時間不重複扣、打完拿獎勵、播到一半時間用完不能白拿獎勵
+func _test_end_field_battle(gs: GameState, ms: MapState) -> void:
+	var cell := _walk_next_to_monster(ms)
+	if cell.x < 0:
+		_check(false, "找不到第二群怪來測結算")
+		return
+
+	# 時間在戰鬥播到一半就用完 → 被打斷：沒有獎勵、怪群還在
+	var cut: Dictionary = ms.begin_field_battle(cell)
+	var mm_before: int = gs.mm
+	var hp_before: int = ms.hp
+	var outcome: String = ms.end_field_battle(cut, float(cut.seconds) * 0.3, false)
+	_check(outcome == "interrupted",
+			"播到三成時間就用完，應該判成被打斷，實際是 %s" % outcome)
+	_check(gs.mm == mm_before, "被打斷的戰鬥不該給筆芯（%d → %d）" % [mm_before, gs.mm])
+	_check(ms.hp == hp_before, "被打斷的戰鬥不該扣血")
+	_check(ms.has_monster(cell), "被打斷之後怪群應該還在")
+
+	# 完整打完：時間不該在結算時再扣一次；打贏要清掉怪群
+	var full: Dictionary = ms.begin_field_battle(cell)
+	var t_before := ms.time_left
+	outcome = ms.end_field_battle(full, float(full.seconds), false)
+	_check(is_equal_approx(ms.time_left, t_before) or ms.seg > 0,
+			"就地開打不該在結算時再扣時間（%.1f → %.1f）" % [t_before, ms.time_left])
+	if outcome == "win":
 		_check(not ms.has_monster(cell), "打贏了但怪群格沒有被清掉")
+	print("結算規則正確：播到一半被打斷不給獎勵，完整打完 → %s" % outcome)
 
 
 ## 佈陣時的敵人預覽，必須和真的開打時的位置一模一樣。

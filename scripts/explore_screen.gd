@@ -25,6 +25,7 @@ const VIEW := Rect2(0, 66, 898, 734)
 const PANEL_X := 912.0
 const MINI := Rect2(922, 78, 324, 240)     # 小地圖
 const MINI_CELL := 6.0
+const SCREEN_BG := Color(0.09, 0.10, 0.13)   # 和 main.gd 的背景同色
 
 
 var ms: MapState
@@ -37,6 +38,7 @@ var cam_ready := false
 # 就地開打：戰鬥直接畫在大地圖上，不換畫面
 var battle = null                 # BattleSim
 var battle_origin := Vector2i.ZERO   # 戰場左上角在大地圖上的位置
+var battle_cell := Vector2i(-1, -1)  # 正在打的那群怪原本所在的格子（開打時不再畫牠的圖示）
 var battle_tick := 0.0
 
 var top_label: Label
@@ -62,11 +64,30 @@ var syn_panel: Panel
 var log_panel: Panel
 var info_panel: Panel
 
+# 效能用的快取
+var _room_col: Dictionary = {}     # 格子 -> 房間底色
+var _cell_col: Dictionary = {}     # 格子 -> 房間底色＋手繪色差＋家具變暗
+var _max_lift := 0.0               # 最高的格子抬升多少像素（決定要往下多掃幾排）
+var _mini_tex: ImageTexture        # 小地圖畫成一張圖，只在內容變了才重畫
+var _mini_sig := ""
+var _death_ticks: Dictionary = {}  # 就地開打：uid -> 陣亡的 tick
+var _battle_ref = null
+var _ground_mesh := ArrayMesh.new()   # 整片已探索的地面，世界座標
+var _occ_mesh := ArrayMesh.new()      # 家人佔用的格子，疊會呼吸的紅光用
+var _outline := PackedVector2Array()  # 所有格子的邊線（成對的線段）
+var _occ_lines := PackedVector2Array()
+var _ground_sig := ""
+var _white: ImageTexture
+
 
 func _ready() -> void:
 	font = ThemeDB.fallback_font
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_STOP
+	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST     # 小地圖放大時保持一格一格的
+	var px := Image.create(1, 1, false, Image.FORMAT_RGBA8)
+	px.fill(Color.WHITE)
+	_white = ImageTexture.create_from_image(px)             # 地面網格用頂點色，貼一張白圖就好
 	set_process(true)
 
 	top_label = _label(Vector2(16, 8), Vector2(1250, 26), 17)
@@ -132,7 +153,7 @@ func _toggle_formation() -> void:
 func build_foe_preview() -> void:
 	foe_preview = []
 	preview_label = ""
-	if ms == null or not formation_mode:
+	if ms == null or not formation_mode or battle != null:
 		return
 	var adj: Array = ms.adjacent_monsters()
 	if adj.is_empty():
@@ -199,6 +220,9 @@ func _button(text: String, pos: Vector2, sz: Vector2, cb: Callable) -> Button:
 func attach(state: MapState) -> void:
 	ms = state
 	cam_ready = false
+	_build_color_cache()
+	_mini_sig = ""
+	_ground_sig = ""
 	refresh()
 
 
@@ -443,6 +467,14 @@ func refresh() -> void:
 	queue_redraw()
 
 
+## 戰鬥播放中每幀只需要更新時間列；完整的 refresh() 會重建所有面板文字
+func update_battle_hud() -> void:
+	if battle == null:
+		return
+	time_label.text = "戰鬥中…　已經打了 %.1f 秒　剩餘時間 %d 秒（時間照常在走）" % [
+		battle_tick * 0.1, int(ms.time_left)]
+
+
 func _refresh_cell_label() -> void:
 	if ms == null:
 		return
@@ -523,9 +555,9 @@ func _draw() -> void:
 	if ms == null:
 		return
 	draw_rect(VIEW, Color(0.05, 0.05, 0.07))
+	_draw_ground()
+	_draw_near_details()
 	var cells := _visible_cells()
-	for c in cells:
-		_draw_cell(c)
 	for c in cells:
 		_draw_content(c)
 	if battle != null:
@@ -535,7 +567,105 @@ func _draw() -> void:
 			_draw_formation()
 			_draw_foe_preview()
 		_draw_player()
+	# 地面網格不做裁切，超出地圖視窗的部分用背景色蓋掉（上方資訊列、右側面板區）
+	draw_rect(Rect2(0, 0, size.x, VIEW.position.y), SCREEN_BG)
+	draw_rect(Rect2(VIEW.end.x, 0, size.x - VIEW.end.x, size.y), SCREEN_BG)
 	_draw_minimap()
+
+
+## 整片已探索的地面：玩家移動（明暗改變）、探索範圍或時段變了才重建網格；
+## 每一幀只要用位移跟著攝影機貼一次。以前每幀對畫面內每一格各畫 3～5 次。
+func _draw_ground() -> void:
+	var sig := "%d|%d|%d|%d" % [ms.discovered.size(), ms.seg, ms.pos.x, ms.pos.y]
+	if sig != _ground_sig:
+		_ground_sig = sig
+		_rebuild_ground()
+	draw_set_transform(VIEW.get_center() - cam)
+	draw_mesh(_ground_mesh, _white)
+	draw_multiline(_outline, Color(0, 0, 0, 0.18), 1.0)
+	# 家人佔用：底色已經染紅，這裡再疊一層會呼吸的紅光
+	var pulse := 0.07 + 0.07 * sin(Time.get_ticks_msec() / 260.0)
+	draw_mesh(_occ_mesh, _white, Transform2D.IDENTITY, Color(1.0, 0.2, 0.15, pulse))
+	if not _occ_lines.is_empty():
+		draw_multiline(_occ_lines, Color(1, 0.42, 0.32, 0.4), 1.5)
+	draw_set_transform(Vector2.ZERO)
+
+
+func _rebuild_ground() -> void:
+	var verts := PackedVector2Array()
+	var cols := PackedColorArray()
+	var overts := PackedVector2Array()
+	var ocols := PackedColorArray()
+	_outline = PackedVector2Array()
+	_occ_lines = PackedVector2Array()
+	var order: Array = ms.discovered.keys()
+	order.sort_custom(func(a, b): return a.x + a.y < b.x + b.y)    # 由遠到近，墊高的側面才會蓋對
+	var dim := Color(0.07, 0.08, 0.12)
+	for c in order:
+		var h := ms.height_of(c)
+		var ctr: Vector2 = iso(c.x + 0.5, c.y + 0.5) - Vector2(0, h * STEP_PX)
+		var seen := ms.is_visible(c)
+		var occ := ms.is_occupied(c)
+		var col: Color = _cell_col[c]
+		if occ:
+			col = col.lerp(Color(0.9, 0.22, 0.17), 0.3)
+		if not seen:
+			col = col.lerp(dim, 0.62)          # 記得，但看不清楚
+		var top := ctr + Vector2(0, -TH * 0.5)
+		var right := ctr + Vector2(TW * 0.5, 0)
+		var bot := ctr + Vector2(0, TH * 0.5)
+		var left := ctr + Vector2(-TW * 0.5, 0)
+		if h > 0:
+			var drop := Vector2(0, h * STEP_PX)
+			var side := col.darkened(0.42)
+			_quad(verts, cols, left, bot, bot + drop, left + drop, side)
+			_quad(verts, cols, bot, right, right + drop, bot + drop, side.darkened(0.12))
+		_quad(verts, cols, top, right, bot, left, col)
+		_outline.append_array([top, right, right, bot, bot, left, left, top])
+		if occ:
+			_quad(overts, ocols, top, right, bot, left, Color(1, 1, 1, 1.0 if seen else 0.45))
+			if (c.x + c.y) % 3 == 0:
+				_occ_lines.append_array([ctr + Vector2(-TW * 0.3, 0), ctr + Vector2(TW * 0.3, 0)])
+	_set_mesh(_ground_mesh, verts, cols)
+	_set_mesh(_occ_mesh, overts, ocols)
+
+
+static func _quad(v: PackedVector2Array, c: PackedColorArray,
+		a: Vector2, b: Vector2, d: Vector2, e: Vector2, col: Color) -> void:
+	v.append_array([a, b, d, a, d, e])
+	for i in 6:
+		c.append(col)
+
+
+static func _set_mesh(mesh: ArrayMesh, verts: PackedVector2Array, cols: PackedColorArray) -> void:
+	mesh.clear_surfaces()
+	if verts.is_empty():
+		return
+	var arr := []
+	arr.resize(Mesh.ARRAY_MAX)
+	arr[Mesh.ARRAY_VERTEX] = verts
+	arr[Mesh.ARRAY_COLOR] = cols
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+
+
+## 視野內的細節（手繪錯開的第二條邊線、地形標記）只有附近一百多格，照舊每幀畫
+func _draw_near_details() -> void:
+	var r := ms.vision
+	for dy in range(-r, r + 1):
+		for dx in range(-r, r + 1):
+			var c: Vector2i = ms.pos + Vector2i(dx, dy)
+			if not ms.in_bounds(c) or not ms.discovered.has(c):
+				continue
+			var center := to_screen(Vector2(c), ms.height_of(c))
+			var d := _diamond(center)
+			var j := Vector2(_jitter(c, 2), _jitter(c, 3)) * 1.6
+			draw_polyline(PackedVector2Array([d[0] + j, d[1] + j, d[2] + j, d[3] + j, d[0] + j]),
+					Color(0.1, 0.09, 0.12, 0.18), 1.0)
+			var t: String = ms.terrain_of(c)
+			var mark: String = DB.terrain[t].mark
+			if mark != "" and not ms.is_wall(c):
+				draw_string(font, center + Vector2(-TW * 0.5 + 3, -2), mark,
+						HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(DB.terrain[t].color, 0.5))
 
 
 ## 敵人開打時會站的位置，畫成半透明的影子，讓人在按下去之前就看得到這仗長什麼樣
@@ -620,11 +750,15 @@ func _draw_battle() -> void:
 		_draw_fighter(it)
 
 
+## 每隻的陣亡時間在換場時整理一次就好。以前每一幀、每一隻都把全部事件從頭掃一遍。
 func _death_tick(uid: int) -> float:
-	for e in battle.events:
-		if e.type == "death" and e.dst == uid:
-			return float(e.t)
-	return 0.0
+	if battle != _battle_ref:
+		_battle_ref = battle
+		_death_ticks.clear()
+		for e in battle.events:
+			if e.type == "death" and not _death_ticks.has(e.dst):
+				_death_ticks[e.dst] = float(e.t)
+	return float(_death_ticks.get(uid, 0.0))
 
 
 func _draw_fighter(it: Dictionary) -> void:
@@ -656,22 +790,26 @@ func _draw_fighter(it: Dictionary) -> void:
 				Color(0.95, 0.9, 0.5))
 
 
-## 只畫落在視窗裡的格子（地圖有兩千多格，全畫會很慢）
+## 只畫落在視窗裡的格子。
+## 直接用斜角座標 u = x + y（上下）、v = x − y（左右）掃視窗範圍，
+## 只會碰到真的在畫面裡的格子，而且 u 由小到大剛好就是「由遠到近」，不用再排序。
+## （舊寫法是掃玩家周圍 63×63 的正方形再一格格剔除、最後排序。）
 func _visible_cells() -> Array:
-	var span := 2 + ceili(maxf(VIEW.size.x / TW, VIEW.size.y / TH))
+	var o := cam - VIEW.get_center()
+	var half_w := TW * 0.5
+	var half_h := TH * 0.5
+	var vmin := floori((VIEW.position.x - TW + o.x) / half_w)
+	var vmax := ceili((VIEW.end.x + TW + o.x) / half_w)
+	var umin := floori((VIEW.position.y - TH * 2.0 + o.y) / half_h) - 1
+	var umax := ceili((VIEW.end.y + TH * 2.0 + _max_lift + o.y) / half_h)
 	var out: Array = []
-	for dy in range(-span, span + 1):
-		for dx in range(-span, span + 1):
-			var c: Vector2i = ms.pos + Vector2i(dx, dy)
-			if not ms.in_bounds(c) or not ms.discovered.has(c):
+	for u in range(maxi(umin, 0), umax + 1):
+		for v in range(vmin, vmax + 1):
+			if (u + v) % 2 != 0 or u + v < 0 or u - v < 0:
 				continue
-			var p := to_screen(Vector2(c), ms.height_of(c))
-			if p.x < VIEW.position.x - TW or p.x > VIEW.end.x + TW:
-				continue
-			if p.y < VIEW.position.y - TH * 3 or p.y > VIEW.end.y + TH * 3:
-				continue
-			out.append(c)
-	out.sort_custom(func(a, b): return a.x + a.y < b.x + b.y)
+			var c := Vector2i((u + v) / 2, (u - v) / 2)
+			if ms.in_bounds(c) and ms.discovered.has(c):
+				out.append(c)
 	return out
 
 
@@ -688,61 +826,36 @@ static func _jitter(c: Vector2i, salt: int) -> float:
 
 
 func _room_color(c: Vector2i) -> Color:
-	var room: String = ms.room_at.get(c, "")
+	return _room_col.get(c, Color(0.3, 0.3, 0.34))
+
+
+## 每格的底色（房間色＋手繪色差＋家具變暗）在地圖建好時算一次就好。
+## 以前每一幀對每一格都要找房間、再把 "#7a5a42" 這種字串解析成顏色。
+func _build_color_cache() -> void:
+	_room_col.clear()
+	_cell_col.clear()
+	_max_lift = 0.0
+	var parsed: Dictionary = {}
 	for r in DB.map.rooms:
-		if r.id == room:
-			return Color(r.color)
-	return Color(0.3, 0.3, 0.34)
-
-
-func _draw_cell(c: Vector2i) -> void:
-	var h := ms.height_of(c)
-	var center := to_screen(Vector2(c), h)
-	var seen := ms.is_visible(c)
-	var col := _room_color(c)
-	col = col.lightened(_jitter(c, 1) * 0.16)        # 手繪的顏色不均
-	if ms.is_wall(c):
-		col = col.darkened(0.35)
-	if not seen:
-		col = col.lerp(Color(0.07, 0.08, 0.12), 0.62)   # 記得，但看不清楚
-	# 高度側面
-	if h > 0:
-		var side := PackedVector2Array([
-			center + Vector2(-TW * 0.5, 0), center + Vector2(0, TH * 0.5),
-			center + Vector2(TW * 0.5, 0),
-			center + Vector2(TW * 0.5, h * STEP_PX), center + Vector2(0, TH * 0.5 + h * STEP_PX),
-			center + Vector2(-TW * 0.5, h * STEP_PX)])
-		draw_colored_polygon(side, col.darkened(0.42))
-	draw_colored_polygon(_diamond(center), col)
-	# 手繪邊線：兩條稍微錯開的細線
-	var d := _diamond(center)
-	var outline := PackedVector2Array(d)
-	outline.append(d[0])
-	draw_polyline(outline, Color(0, 0, 0, 0.22 if seen else 0.12), 1.0)
-	if seen:
-		var j := Vector2(_jitter(c, 2), _jitter(c, 3)) * 1.6
-		var sketch := PackedVector2Array()
-		for p in outline:
-			sketch.append(p + j)
-		draw_polyline(sketch, Color(0.1, 0.09, 0.12, 0.18), 1.0)
-	# 家人佔用：紅色警戒區，會呼吸
-	if ms.is_occupied(c):
-		var pulse: float = 0.22 + 0.14 * sin(Time.get_ticks_msec() / 260.0 + c.x * 0.4 + c.y * 0.4)
-		draw_colored_polygon(_diamond(center), Color(1.0, 0.18, 0.14, pulse if seen else pulse * 0.45))
-		if ((c.x + c.y) % 3) == 0:
-			draw_line(center + Vector2(-TW * 0.3, 0), center + Vector2(TW * 0.3, 0),
-					Color(1, 0.4, 0.3, 0.5 if seen else 0.22), 1.5)
-	# 地形標記只在看得見時畫，而且很淡，不要搶走圖案
-	var mark: String = DB.terrain[ms.terrain_of(c)].mark
-	if seen and mark != "" and not ms.is_wall(c):
-		draw_string(font, center + Vector2(-TW * 0.5 + 3, -2), mark,
-				HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(DB.terrain[ms.terrain_of(c)].color, 0.5))
+		parsed[r.id] = Color(r.color)
+	for y in ms.height:
+		for x in ms.width:
+			var c := Vector2i(x, y)
+			var base: Color = parsed.get(ms.room_at.get(c, ""), Color(0.3, 0.3, 0.34))
+			_room_col[c] = base
+			var col := base.lightened(_jitter(c, 1) * 0.16)    # 手繪的顏色不均
+			if ms.is_wall(c):
+				col = col.darkened(0.35)
+			_cell_col[c] = col
+			_max_lift = maxf(_max_lift, ms.height_of(c) * STEP_PX)
 
 
 func _draw_content(c: Vector2i) -> void:
 	var content = ms.cell_at(c)
 	if content == null:
 		return
+	if battle != null and c == battle_cell:
+		return          # 這群已經在場上展開成一隻隻的了
 	var h := ms.height_of(c)
 	var center := to_screen(Vector2(c), h) - Vector2(0, TH * 0.35)
 	var seen := ms.is_visible(c)
@@ -761,6 +874,13 @@ func _draw_content(c: Vector2i) -> void:
 const GROUP_SHOW_MAX := 7
 
 func _draw_monster_group(c: Vector2i, center: Vector2, seen: bool) -> void:
+	if not seen:
+		# 看過但不在視野內：只記得「那邊有一群東西」，畫一團就好，大小代表規模。
+		# （以前遠處每一群也各畫七個圓，探索越多越慢）
+		var blob: float = TW * {"monster_small": 0.16, "monster_mid": 0.2}.get(
+				ms.cells[c].key, 0.25)
+		draw_circle(center, blob, Color(0.75, 0.3, 0.3, 0.35))
+		return
 	var roster: Array = []
 	for g in ms.encounter_groups(c):
 		for i in int(g.count):
@@ -776,11 +896,7 @@ func _draw_monster_group(c: Vector2i, center: Vector2, seen: bool) -> void:
 		var spread: float = 0.42 + 0.4 * absf(_jitter(c, 30 + i))
 		var p := center + Vector2(cos(a) * TW * 0.3 * spread,
 				sin(a) * TH * 0.42 * spread - r * 0.35)
-		if seen:
-			Art.draw_enemy(self, roster[i], p, r)
-		else:
-			# 看過但不在視野內：只記得「那邊有一群東西」
-			draw_circle(p, r * 0.6, Color(0.75, 0.3, 0.3, 0.3))
+		Art.draw_enemy(self, roster[i], p, r)
 	if seen:
 		var label := "×%d" % total
 		draw_string_outline(font, center + Vector2(-TW * 0.5, TH * 0.62), label,
@@ -810,35 +926,52 @@ func _ellipse(center: Vector2, rx: float, ry: float, col: Color) -> void:
 	draw_colored_polygon(pts, col)
 
 
-## 小地圖：俯視、只畫走過的地方。這是判斷「東西大概在哪」的主要依據。
-func _draw_minimap() -> void:
-	draw_rect(MINI.grow(4), Color(0.07, 0.08, 0.11))
-	draw_rect(MINI.grow(4), Color(0.4, 0.43, 0.5), false, 1.0)
+## 小地圖整張烘成一張圖（地板＋物件點），探索範圍、時段或物件變了才重畫。
+## fill_rect 是引擎原生的，比每幀從腳本呼叫幾千次 draw_rect／draw_circle 快得多。
+func _rebuild_minimap() -> void:
+	var s := int(MINI_CELL)
+	var img := Image.create(ms.width * s, ms.height * s, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
 	for c in ms.discovered:
-		var r := Rect2(MINI.position + Vector2(c) * MINI_CELL, Vector2(MINI_CELL, MINI_CELL))
-		var col := _room_color(c)
+		var col: Color = _room_color(c)
 		if ms.is_wall(c):
 			col = col.darkened(0.5)
 		if ms.is_occupied(c):
 			col = col.lerp(Color(0.95, 0.2, 0.15), 0.55)
-		draw_rect(r, col)
-	for c in ms.discovered:
-		var content = ms.cell_at(c)
-		if content == null:
+		img.fill_rect(Rect2i(c.x * s, c.y * s, s, s), col)
+	for c in ms.cells:
+		if not ms.discovered.has(c):
 			continue
-		var p: Vector2 = MINI.position + (Vector2(c) + Vector2(0.5, 0.5)) * MINI_CELL
+		var content: Dictionary = ms.cells[c]
 		var col := Color(0.95, 0.35, 0.3)
-		var dot := MINI_CELL * 0.45
+		var dot := 3
 		match content.kind:
 			"shop": col = Color(0.4, 0.8, 1.0)
 			"chest": col = Color(1.0, 0.85, 0.3)
 			"rest": col = Color(0.4, 1.0, 0.6)
 			"copier": col = Color(0.85, 0.7, 1.0)
 			"monster":
-				# 小地圖上的點大小代表怪群規模，一眼看得出哪邊硬
-				dot = MINI_CELL * (0.32 if content.key == "monster_small"
-						else (0.45 if content.key == "monster_mid" else 0.6))
-		draw_circle(p, dot, col)
+				# 點的大小代表怪群規模，一眼看得出哪邊硬
+				dot = {"monster_small": 2, "monster_mid": 4}.get(content.key, 6)
+		var off := (s - dot) / 2
+		img.fill_rect(Rect2i(c.x * s + off, c.y * s + off, dot, dot), col)
+	if _mini_tex == null:
+		_mini_tex = ImageTexture.create_from_image(img)
+	else:
+		_mini_tex.update(img)
+
+
+## 小地圖：俯視、只畫走過的地方。這是判斷「東西大概在哪」的主要依據。
+func _draw_minimap() -> void:
+	draw_rect(MINI.grow(4), Color(0.07, 0.08, 0.11))
+	draw_rect(MINI.grow(4), Color(0.4, 0.43, 0.5), false, 1.0)
+	# 地板與物件點都烘在同一張圖裡，貼一次就好。
+	# 以前每一幀對每個探索過的格子各畫一個方塊（最多 2160 次），物件再各畫一個圓。
+	var sig := "%d|%d|%d" % [ms.discovered.size(), ms.seg, ms.cells.size()]
+	if sig != _mini_sig:
+		_mini_sig = sig
+		_rebuild_minimap()
+	draw_texture(_mini_tex, MINI.position)
 	var pp: Vector2 = MINI.position + (Vector2(ms.pos) + Vector2(0.5, 0.5)) * MINI_CELL
 	draw_circle(pp, MINI_CELL * 0.8, Color(1, 0.95, 0.4))
 	draw_arc(pp, MINI_CELL * 1.6, 0, TAU, 16, Color(1, 0.95, 0.4, 0.6), 1.0)
