@@ -69,9 +69,10 @@ func _run() -> void:
 	_check(height_ok, "戰場的高度沒有照抄地圖")
 	print("戰場 %d×%d，帶進 %d 格家具障礙" % [int(arena.w), int(arena.h), wall_count])
 
-	var used: Dictionary = {}
-	var allies := gs.field_player_descs(arena, ms.pos, used)
-	var foes := gs.field_enemy_descs(ms.encounter_groups(cell), arena, cell, used)
+	var dep: Dictionary = ms.deploy(cell, ms.encounter_groups(cell))
+	var allies: Array = dep.allies
+	var foes: Array = dep.foes
+	_test_front_line(dep, ms.pos - origin, dep.facing)
 	_check(allies.size() == gs.board.size(),
 			"陣形有 %d 件，只展開了 %d 件" % [gs.board.size(), allies.size()])
 	_check(foes.size() > 0, "敵人一個都沒放出來")
@@ -150,18 +151,49 @@ func _test_end_field_battle(gs: GameState, ms: MapState) -> void:
 func _test_preview_matches(gs: GameState, ms: MapState, cell: Vector2i) -> void:
 	var placements: Array = []
 	for pass_i in 2:
-		var arena := ms.build_arena(cell)
-		var used: Dictionary = {}
-		gs.field_player_descs(arena, ms.pos, used)
+		var dep: Dictionary = ms.deploy(cell, ms.encounter_groups(cell))
 		var out: Array = []
-		for d in gs.field_enemy_descs(ms.encounter_groups(cell), arena, cell, used):
-			out.append("%s@%s" % [d.id, str(Vector2i(d.cell) + Vector2i(arena.origin))])
+		for d in dep.foes:
+			out.append("%s@%s" % [d.id, str(Vector2i(d.cell) + Vector2i(dep.arena.origin))])
 		placements.append(out)
 	_check(placements[0] == placements[1],
 			"同樣條件算兩次，敵人位置不一樣 —— 預覽會和實際開打對不上\nA=%s\nB=%s" % [
 				str(placements[0].slice(0, 4)), str(placements[1].slice(0, 4))])
 	_check(not placements[0].is_empty(), "預覽算不出任何敵人位置")
 	print("敵人預覽可重現：%d 隻，位置完全一致" % placements[0].size())
+
+
+## 兩邊要有一條清楚的前線：沿著「玩家 → 怪群」的方向，所有我方都在所有敵人的後面。
+## （回報過的問題：陣形以玩家為中心展開，跟只隔一格的怪群範圍重疊，兩邊交錯站。）
+func _test_front_line(dep: Dictionary, me: Vector2i, facing: Vector2i) -> void:
+	var ally_front := -999
+	var foe_back := 999
+	for a in dep.allies:
+		var p: int = (a.cell.x - me.x) * facing.x + (a.cell.y - me.y) * facing.y
+		ally_front = maxi(ally_front, p)
+	for f in dep.foes:
+		var q: int = (f.cell.x - me.x) * facing.x + (f.cell.y - me.y) * facing.y
+		foe_back = mini(foe_back, q)
+	_check(ally_front < foe_back,
+			"我方和敵人交錯站：我方最前到 %d，敵人最後到 %d（沿面向 %s 量）" % [
+				ally_front, foe_back, str(facing)])
+	if ally_front < foe_back:
+		print("前線清楚：我方最前在第 %d 格、敵人最後在第 %d 格（面向 %s）" % [
+				ally_front, foe_back, str(facing)])
+
+	# 佈陣畫面的換算要和展開一致：陣形格 → 地圖 → 陣形格要能來回
+	for f in [Vector2i(0, -1), Vector2i(1, 0), Vector2i(0, 1), Vector2i(-1, 0)]:
+		for by in range(GameState.PLAYER_Y_MIN, 8):
+			for bx in 8:
+				var b := Vector2i(bx, by)
+				var m := GameState.formation_to_map(b, Vector2i(10, 10), f)
+				_check(GameState.map_to_formation(m, Vector2i(10, 10), f) == b,
+						"陣形換算來回對不上：%s（面向 %s）" % [str(b), str(f)])
+				# 後排一定在玩家身後（沿面向量 ≤ 0）
+				var back: int = (m.x - 10) * f.x + (m.y - 10) * f.y
+				_check(back <= 0, "陣形有格子跑到玩家前面去了：%s → %s（面向 %s）" % [str(b), str(m), str(f)])
+		_check(GameState.formation_to_map(GameState.FORMATION_FRONT, Vector2i(10, 10), f) == Vector2i(10, 10),
+				"陣形最前排的中間應該對到玩家站的格子（面向 %s）" % str(f))
 
 
 func _d(a: Vector2i, b: Vector2i) -> int:

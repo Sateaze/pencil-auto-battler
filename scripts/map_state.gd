@@ -400,11 +400,32 @@ func boss_groups() -> Array:
 	return DB.boss_waves[clampi(gs.wave, 1, DB.boss_waves.size()) - 1].enemies
 
 
-func _begin_battle(cell: Vector2i, groups: Array) -> Dictionary:
+## 兩邊怎麼站：切戰場、陣形面向 cell 展開、敵人從 cell 往遠離玩家的方向排開。
+## 實際開打和佈陣預覽都呼叫這一個，所以預覽不可能跟實際對不上。
+func deploy(cell: Vector2i, groups: Array) -> Dictionary:
 	var arena := build_arena(cell)
+	var facing := GameState.facing_toward(pos, cell)
 	var used: Dictionary = {}
-	var allies: Array = gs.field_player_descs(arena, pos, used)
-	var foes: Array = gs.field_enemy_descs(groups, arena, cell, used)
+	var allies: Array = gs.field_player_descs(arena, pos, used, facing)
+	var foes: Array = gs.field_enemy_descs(groups, arena, cell, used, facing)
+	return {"arena": arena, "allies": allies, "foes": foes, "facing": facing}
+
+
+## 陣形現在朝哪：決戰時朝巢穴；旁邊有怪群時朝牠；都沒有就朝地圖上方
+func formation_facing() -> Vector2i:
+	if day_over and in_bounds(lair):
+		return GameState.facing_toward(pos, lair)
+	var adj := adjacent_monsters()
+	if not adj.is_empty():
+		return GameState.facing_toward(pos, adj[0])
+	return GameState.DEFAULT_FACING
+
+
+func _begin_battle(cell: Vector2i, groups: Array) -> Dictionary:
+	var d := deploy(cell, groups)
+	var arena: Dictionary = d.arena
+	var allies: Array = d.allies
+	var foes: Array = d.foes
 	var sim := BattleSim.new()
 	sim.setup(gs.rng.randi(), allies, foes, battle_terrain_fx(), arena)
 	var result: Dictionary = sim.run()

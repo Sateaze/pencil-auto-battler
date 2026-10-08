@@ -211,22 +211,22 @@ func build_foe_preview() -> void:
 		cell = adj[0]
 		groups = ms.encounter_groups(cell)
 		label = ms.cell_at(cell).label
-	var arena := ms.build_arena(cell)
-	var origin: Vector2i = arena.origin
-	var used: Dictionary = {}
-	ms.gs.field_player_descs(arena, ms.pos, used)      # 先佔位，敵人才不會疊上來
-	for d in ms.gs.field_enemy_descs(groups, arena, cell, used):
-		foe_preview.append({"cell": Vector2i(d.cell) + origin, "id": d.id})
+	# 跟實際開打呼叫同一個 deploy()，預覽才不會騙人
+	var d: Dictionary = ms.deploy(cell, groups)
+	var origin: Vector2i = d.arena.origin
+	for f in d.foes:
+		foe_preview.append({"cell": Vector2i(f.cell) + origin, "id": f.id})
 	preview_label = "%s（%d 隻）" % [label, foe_preview.size()]
 
 
-## 地圖格 ↔ 陣形格。陣形是相對位置，所以你走到哪，陣形就跟到哪。
+## 地圖格 ↔ 陣形格。陣形是相對位置，而且會轉向面對要打的怪：
+## 最前排的中間對到你站的格子，其他排往你身後延伸。
 func board_cell_of(map_cell: Vector2i) -> Vector2i:
-	return GameState.FORMATION_CENTER + (map_cell - ms.pos)
+	return GameState.map_to_formation(map_cell, ms.pos, ms.formation_facing())
 
 
 func map_cell_of(board_cell: Vector2i) -> Vector2i:
-	return ms.pos + (board_cell - GameState.FORMATION_CENTER)
+	return GameState.formation_to_map(board_cell, ms.pos, ms.formation_facing())
 
 
 static func is_formation_cell(b: Vector2i) -> bool:
@@ -527,7 +527,7 @@ func refresh() -> void:
 	elif formation_mode:
 		var foes := "　紅色影子 = 開打時敵人會站的位置（%s）" % preview_label \
 				if not preview_label.is_empty() else "　走到怪群旁邊佈陣，就會看到敵人會站在哪"
-		time_label.text = "佈陣中：點棋子再點藍色格子移動。場上 %d / %d　紅叉 = 有家具，開打時會自動挪開%s" % [
+		time_label.text = "佈陣中：陣形會轉向面對旁邊的怪，你站在最前排中間。點棋子再點藍色格子移動。場上 %d / %d　紅叉 = 有家具%s" % [
 				gs2.board.size(), gs2.pop_cap(), foes]
 	log_label.text = "\n".join(ms.logs)
 	_refresh_cell_label()

@@ -1,4 +1,6 @@
 extends SceneTree
+
+const GameState = preload("res://scripts/game_state.gd")
 ## 回歸測試：載入真的 main.tscn，送出真的滑鼠事件。
 ## 曾經踩過的坑：
 ##   - set_anchors_preset() 只設錨點不設 offset，控制項維持 0×0，畫面正常但收不到點擊。
@@ -219,7 +221,7 @@ func _test_synergy_preview() -> void:
 func _test_map_formation() -> void:
 	scene._show_explore()
 	await process_frame
-	var from := Vector2i(3, 6)        # 正好是 FORMATION_CENTER，對應玩家腳下那格
+	var from: Vector2i = GameState.FORMATION_FRONT    # 陣形最前排中間，對應玩家腳下那格
 	var to := Vector2i(5, 5)
 	scene.gs.board = {from: {"uid": 60, "id": "bat", "star": 1, "bonus_hp": 0.0}}
 	ex.formation_mode = true
@@ -227,8 +229,8 @@ func _test_map_formation() -> void:
 	ex.refresh()
 	await process_frame
 
-	_check(ex.board_cell_of(ms.pos) == Vector2i(3, 6),
-			"玩家腳下那格應該對應到陣形中心，實際 %s" % str(ex.board_cell_of(ms.pos)))
+	_check(ex.board_cell_of(ms.pos) == GameState.FORMATION_FRONT,
+			"玩家腳下那格應該對應到陣形最前排中間，實際 %s" % str(ex.board_cell_of(ms.pos)))
 	_check(ex.bench_buttons[0].visible, "佈陣模式下備戰席應該顯示出來")
 
 	var before_pos = ms.pos
@@ -250,7 +252,7 @@ func _test_map_formation() -> void:
 		ms.walk(ms.path_to(step))
 		_check(str(scene.gs.board.keys()) == snapshot,
 				"走動之後陣形被改掉了：%s → %s" % [snapshot, str(scene.gs.board.keys())])
-		_check(ex.map_cell_of(to) == ms.pos + (to - Vector2i(3, 6)),
+		_check(ex.map_cell_of(to) == GameState.formation_to_map(to, ms.pos, ms.formation_facing()),
 				"陣形沒有跟著玩家移動")
 	# 佈陣時要看得到棋子數據。
 	# 上面走路時可能經過家人佔用的房間、棋子被「收走」，所以這裡重新放一件確定存在的。

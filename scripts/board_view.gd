@@ -6,6 +6,7 @@ extends Control
 
 const DB = preload("res://scripts/db.gd")
 const Art = preload("res://scripts/art.gd")
+const GameState = preload("res://scripts/game_state.gd")
 
 signal cell_clicked(cell: Vector2i)
 
@@ -106,6 +107,11 @@ func _draw_board() -> void:
 			draw_colored_polygon(_diamond(x, y), col)
 			draw_polyline(_closed(_diamond(x, y)), Color(0, 0, 0, 0.16), 1.0)
 	draw_line(proj(0, 4), proj(W, 4), Color(0.95, 0.9, 0.72, 0.55), 2.0)
+	# 陣形最前排的中間就是你站的格子；上方（y 小）是面對敵人的前方
+	var me := GameState.FORMATION_FRONT
+	draw_polyline(_closed(_diamond(me.x, me.y)), Color(1, 0.85, 0.3, 0.9), 2.0)
+	_outlined(cell_center(Vector2(me)) + Vector2(-32, TH * 0.5 + 12), "你站這", 11, Color(1, 0.88, 0.4))
+	_outlined(proj(W * 0.5, 4) + Vector2(-80, -10), "↑ 前方（面對敵人）", 12, Color(1, 0.9, 0.6), 160)
 	if selected_cell.x >= 0:
 		draw_colored_polygon(_diamond(selected_cell.x, selected_cell.y), Color(1, 0.9, 0.2, 0.28))
 		draw_polyline(_closed(_diamond(selected_cell.x, selected_cell.y)), Color(1, 0.9, 0.25), 2.5)
@@ -136,6 +142,6 @@ func _draw_unit(it: Dictionary) -> void:
 	_outlined(center + Vector2(-32, r + 14), str(it.name), 11, Color(0.97, 0.97, 1.0))
 
 
-func _outlined(p: Vector2, text: String, size_px: int, col: Color) -> void:
-	draw_string_outline(font, p, text, HORIZONTAL_ALIGNMENT_CENTER, 64, size_px, 4, Color(0, 0, 0, col.a))
-	draw_string(font, p, text, HORIZONTAL_ALIGNMENT_CENTER, 64, size_px, col)
+func _outlined(p: Vector2, text: String, size_px: int, col: Color, width: float = 64.0) -> void:
+	draw_string_outline(font, p, text, HORIZONTAL_ALIGNMENT_CENTER, width, size_px, 4, Color(0, 0, 0, col.a))
+	draw_string(font, p, text, HORIZONTAL_ALIGNMENT_CENTER, width, size_px, col)

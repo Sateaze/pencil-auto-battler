@@ -584,9 +584,39 @@ static func _merge_fx(into: Dictionary, from: Dictionary) -> void:
 
 
 
-## 陣形中心：準備畫面上的這一格，對應到大地圖上玩家站的位置。
-## 其他棋子依照和它的相對位置，在玩家周圍展開。
-const FORMATION_CENTER := Vector2i(3, 6)
+## 陣形會轉向、面對要打的那群怪：
+## 整備棋盤的「上方」（y 小的那邊）就是面對敵人的前方。最前排的中間這一格對到玩家站的位置，
+## 其他排往玩家身後延伸；敵人則從怪群那格往遠離玩家的方向排開。
+## 這樣兩邊中間是一條清楚的前線，不會交錯站在一起（以前陣形以玩家為中心向四周展開，
+## 跟只隔一格的怪群範圍重疊，佈陣預覽和實際開打都疊成一團）。
+## 佈陣畫面、敵人預覽、實際開打都用下面這組換算，所以看到什麼就是什麼。
+const FORMATION_FRONT := Vector2i(3, 4)
+const DEFAULT_FACING := Vector2i(0, -1)      # 附近沒有怪時，陣形朝地圖上方
+
+
+## from 看向 to 的方向，取上下左右之中最接近的一個
+static func facing_toward(from: Vector2i, to: Vector2i) -> Vector2i:
+	var d := to - from
+	if d == Vector2i.ZERO:
+		return DEFAULT_FACING
+	if absi(d.x) >= absi(d.y):
+		return Vector2i(signi(d.x), 0)
+	return Vector2i(0, signi(d.y))
+
+
+## 陣形格（整備棋盤座標）→ 大地圖格。facing 是「前方」在地圖上的方向。
+static func formation_to_map(b: Vector2i, anchor: Vector2i, facing: Vector2i) -> Vector2i:
+	var o := b - FORMATION_FRONT                 # o.x 往右為正，o.y 往後為正
+	var right := Vector2i(-facing.y, facing.x)
+	return anchor + right * o.x - facing * o.y
+
+
+## 大地圖格 → 陣形格（formation_to_map 的反函數）
+static func map_to_formation(m: Vector2i, anchor: Vector2i, facing: Vector2i) -> Vector2i:
+	var d := m - anchor
+	var right := Vector2i(-facing.y, facing.x)
+	return FORMATION_FRONT + Vector2i(d.x * right.x + d.y * right.y,
+			-(d.x * facing.x + d.y * facing.y))
 
 
 ## 在戰場裡找一個離 want 最近、沒被佔用也沒被擋住的格子（螺旋往外找）。
@@ -609,9 +639,10 @@ static func free_spot(arena: Dictionary, want: Vector2i, used: Dictionary) -> Ve
 	return Vector2i(-1, -1)
 
 
-## 在大地圖上就地開打時的我方佈陣：以 anchor（玩家所在格）為中心展開陣形。
+## 在大地圖上就地開打時的我方佈陣：最前排對齊 anchor（玩家所在格），面向 facing。
 ## 位置被家具擋住就往外找最近的空位，所以不會有人卡在牆裡。
-func field_player_descs(arena: Dictionary, anchor_map: Vector2i, used: Dictionary) -> Array:
+func field_player_descs(arena: Dictionary, anchor_map: Vector2i, used: Dictionary,
+		facing: Vector2i) -> Array:
 	var syn := synergies()
 	var tsyn := trait_synergies()
 	var origin: Vector2i = arena.origin
@@ -619,7 +650,7 @@ func field_player_descs(arena: Dictionary, anchor_map: Vector2i, used: Dictionar
 	for c in board:
 		var inst: Dictionary = board[c]
 		var def := unit_def(inst)
-		var want: Vector2i = anchor_map + (c - FORMATION_CENTER) - origin
+		var want: Vector2i = formation_to_map(c, anchor_map, facing) - origin
 		var local := free_spot(arena, want, used)
 		if local.x < 0:
 			continue
@@ -641,9 +672,9 @@ func field_player_descs(arena: Dictionary, anchor_map: Vector2i, used: Dictionar
 	return out
 
 
-## 敵人以怪群所在格為中心散開
+## 敵人從怪群所在格開始，往 facing（遠離玩家）的方向一排排排開，每排 5 隻；近戰排前面
 func field_enemy_descs(groups: Array, arena: Dictionary, center_map: Vector2i,
-		used: Dictionary) -> Array:
+		used: Dictionary, facing: Vector2i) -> Array:
 	var origin: Vector2i = arena.origin
 	var entries: Array = []
 	for group in groups:
@@ -652,11 +683,12 @@ func field_enemy_descs(groups: Array, arena: Dictionary, center_map: Vector2i,
 			entries.append({"def": def, "mult": float(group.mult)})
 	entries.sort_custom(func(a, b): return a.def.range < b.def.range)
 	var out: Array = []
-	var ring := 0
+	var right := Vector2i(-facing.y, facing.x)
 	var idx := 0
 	for e in entries:
-		var want: Vector2i = center_map - origin + Vector2i(
-				(idx % 5) - 2, (idx / 5) - 1)
+		var row: int = idx / 5
+		var col: int = (idx % 5) - 2
+		var want: Vector2i = center_map + facing * row + right * col - origin
 		idx += 1
 		var local := free_spot(arena, want, used)
 		if local.x < 0:
