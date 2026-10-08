@@ -20,29 +20,20 @@ const BOARD_POS := Vector2(24, 92)
 const BENCH_Y := 606.0
 const SHOP_Y := 700.0
 const PANEL_X := 580.0
-const SPEEDS := [1.0, 1.5, 3.0]
-const RETREAT_WINDOW := 10.0      # 開戰後可撤退的秒數
+const FIELD_RETREAT := 10.0       # 開打後還能撤退的秒數
 
 var gs: GameState
 var ms: MapState
 var explore: ExploreScreen
-var battle_root: Control
+var battle_root: Control          # 整備畫面（陣形棋盤、備戰席、商店）
 var board_view: BoardView
 
-var mode := "shop"                # encounter | shop | boss
-var phase := "prep"               # prep | battle | result | over
+var phase := "explore"            # explore | prep（整備畫面）| field（地圖上開打中）
 var selected = null
 var hover_preview: Dictionary = {}     # 滑鼠停在商店／備戰席上時預覽的棋子
-var sim: BattleSim = null
-var last_result: Dictionary = {}
-var tick_f := 0.0
-var speed_idx := 1
 var retreated := false
-var encounter_cell := Vector2i(-1, -1)
-var field: Dictionary = {}        # 進行中的就地開打（MapState.begin_field_battle 的回傳）
-var pending_enemies: Array = []
-var pending_terrain: Dictionary = {}
-var pending_label := ""
+var field: Dictionary = {}        # 進行中的戰鬥（MapState.begin_field_battle／begin_boss_wave 的回傳）
+var boss_active := false          # 天黑後的最終決戰
 
 var top_label: Label
 var syn_label: Label
@@ -50,14 +41,10 @@ var info_label: Label
 var msg_label: Label
 var shop_buttons: Array = []
 var bench_buttons: Array = []
-var btn_start: Button
 var btn_refresh: Button
 var btn_xp: Button
 var btn_sell: Button
-var btn_speed: Button
-var btn_continue: Button
 var btn_back: Button
-var btn_retreat: Button
 var reward_label: Label
 var reward_buttons: Array = []
 var title: TitleScreen
@@ -65,6 +52,7 @@ var fade: ColorRect
 
 var _demo := false
 var _frames := 0
+var _demo_boss_frame := -1
 
 
 func _ready() -> void:
@@ -94,6 +82,8 @@ func _build_ui() -> void:
 	explore.prep_requested.connect(_on_prep_requested)
 	explore.day_finished.connect(_on_day_finished)
 	explore.retreat_requested.connect(_on_field_retreat)
+	explore.boss_fight_requested.connect(_on_boss_fight)
+	explore.restart_requested.connect(func(): get_tree().reload_current_scene())
 	add_child(explore)
 	explore.attach(ms)
 
@@ -141,14 +131,10 @@ func _build_ui() -> void:
 		battle_root.add_child(b)
 		shop_buttons.append(b)
 
-	btn_refresh = _button("刷新商店（2 mm）", Vector2(580, 700), Vector2(150, 36), _on_refresh)
-	btn_xp = _button("買經驗（4 mm）", Vector2(740, 700), Vector2(150, 36), _on_buy_xp)
-	btn_sell = _button("賣出選取", Vector2(900, 700), Vector2(110, 36), _on_sell)
-	btn_speed = _button("", Vector2(1020, 700), Vector2(110, 36), _on_speed)
-	btn_start = _button("開戰！", Vector2(1140, 700), Vector2(110, 36), _on_start)
-	btn_retreat = _button("撤退", Vector2(900, 748), Vector2(110, 36), _on_retreat)
-	btn_back = _button("返回地圖", Vector2(1020, 748), Vector2(110, 36), _on_back_to_map)
-	btn_continue = _button("繼續", Vector2(1140, 748), Vector2(110, 36), _on_continue)
+	btn_refresh = _button("刷新商店（2 mm）", Vector2(580, 712), Vector2(160, 40), _on_refresh)
+	btn_xp = _button("買經驗（4 mm）", Vector2(750, 712), Vector2(150, 40), _on_buy_xp)
+	btn_sell = _button("賣出選取", Vector2(910, 712), Vector2(120, 40), _on_sell)
+	btn_back = _button("返回地圖", Vector2(1040, 712), Vector2(210, 40), _on_back_to_map)
 
 	title = TitleScreen.new()
 	title.start_pressed.connect(_on_title_start)
@@ -221,31 +207,26 @@ func _transition(on_black: Callable) -> void:
 
 
 func _show_explore() -> void:
+	phase = "explore"
 	title.visible = false
 	battle_root.visible = false
 	explore.visible = true
 	explore.refresh()
 
 
-func _open_battle(new_mode: String) -> void:
-	mode = new_mode
+## 整備畫面：排陣形、看羈絆；站在抽屜格上（或決戰的波與波之間）才能買東西
+func _open_prep() -> void:
 	phase = "prep"
 	selected = null
-	retreated = false
-	sim = null
 	explore.visible = false
 	battle_root.visible = true
-	match mode:
-		"shop":
-			msg_label.text = "整備：擺位置、換陣容" + ("、買東西" if ms.can_shop() else "（不在抽屜格，不能購買）")
-		"encounter":
-			msg_label.text = "主動出擊：%s　戰場地形「%s」" % [pending_label, ms.terrain_of(ms.pos)]
-		"boss":
-			msg_label.text = "最終決戰：共 %d 波，撐過去就贏了" % gs.max_wave()
+	if boss_active:
+		msg_label.text = "決戰準備：可以買東西、調整陣容，好了就回地圖開打下一波"
+	elif ms.can_shop():
+		msg_label.text = "整備：擺位置、換陣容、買東西"
+	else:
+		msg_label.text = "整備：擺位置、換陣容（不在抽屜格，不能購買）"
 	_refresh()
-
-
-const FIELD_RETREAT := 10.0       # 開打後還能撤退的秒數
 
 
 ## 就地開打：不換畫面，直接在大地圖上以玩家為中心展開陣形
@@ -254,7 +235,22 @@ func _on_attack_requested(cell: Vector2i) -> void:
 		ms._log("陣形是空的！先按「整備」把棋子放上場再打。")
 		explore.refresh()
 		return
-	field = ms.begin_field_battle(cell)
+	_start_field(ms.begin_field_battle(cell), cell, true)
+
+
+## 最終決戰的下一波：一樣在大地圖上打，只是打在巢穴那一塊
+func _on_boss_fight() -> void:
+	if phase == "field" or gs.state != "playing":
+		return
+	if gs.board.is_empty():
+		ms._log("陣形是空的！先按「整備」把棋子放上場再打。")
+		explore.refresh()
+		return
+	_start_field(ms.begin_boss_wave(), ms.lair, false)
+
+
+func _start_field(battle: Dictionary, cell: Vector2i, can_retreat: bool) -> void:
+	field = battle
 	retreated = false
 	phase = "field"
 	explore.formation_mode = false         # 佈陣中直接出擊的話，戰鬥時就不用再算佈陣預覽
@@ -262,22 +258,24 @@ func _on_attack_requested(cell: Vector2i) -> void:
 	explore.battle_origin = field.arena.origin
 	explore.battle_cell = cell
 	explore.battle_tick = 0.0
-	explore.btn_retreat.visible = true
+	explore.btn_retreat.visible = can_retreat
 	explore.refresh()
 
 
 func _on_field_retreat() -> void:
-	if phase != "field":
+	if phase != "field" or boss_active:
 		return
 	retreated = true
 	_finish_field_battle()
 
 
 func _finish_field_battle() -> void:
-	phase = "explore"
 	var played: float = explore.battle_tick * BattleSim.DT
 	explore.battle = null
 	explore.btn_retreat.visible = false
+	if boss_active:
+		_finish_boss_wave()
+		return
 	# 時間在播放過程中已經即時扣掉；播到一半時間用完的話，這裡會判成「被打斷」
 	ms.end_field_battle(field, played, retreated)
 	if ms.day_over:
@@ -287,28 +285,46 @@ func _finish_field_battle() -> void:
 
 
 func _on_prep_requested() -> void:
-	pending_enemies = []
-	pending_terrain = {}
-	_open_battle("shop")
+	_open_prep()
 
 
+## 天黑：玩家趕到巢穴，最終決戰就在那塊地圖上開打。離巢穴越遠，共用生命扣越多。
 func _on_day_finished() -> void:
-	gs.start_boss(ms.hp)
-	pending_enemies = []
-	pending_terrain = {}
-	_open_battle("boss")
+	if boss_active:
+		return
+	boss_active = true
+	ms.start_final_battle()
+	explore.boss_mode = true
+	explore.cam_ready = false              # 鏡頭直接切到巢穴，不要從原地慢慢滑過去
+	_update_boss_text()
+	_show_explore()
+
+
+func _finish_boss_wave() -> void:
+	ms.end_boss_wave(field)
+	if gs.state == "won" or gs.state == "lost":
+		explore.game_over = true
+		ms._log(_summary())
+	_update_boss_text()
+	_show_explore()
+
+
+func _update_boss_text() -> void:
+	if gs.state == "won":
+		explore.boss_wave_text = "通關！你守住了這個家。　" + _summary()
+	elif gs.state == "lost":
+		explore.boss_wave_text = "共用生命歸零，家被佔領了…　" + _summary()
+	else:
+		explore.boss_wave_text = "最終決戰 第 %d / %d 波：%s　　共用生命 %d　　筆芯 %d mm" % [
+				gs.wave, gs.max_wave(), gs.wave_list()[gs.wave - 1].label, gs.life, gs.mm]
 
 
 # ── 戰鬥畫面更新 ────────────────────────────────────────────
 
-func _current_enemies() -> Array:
-	return gs.enemy_descs(gs.wave) if mode == "boss" else pending_enemies
-
-
 func _refresh() -> void:
 	var prep := phase == "prep"
-	var can_buy: bool = prep and (mode != "shop" or ms.can_shop())
-	if mode == "boss":
+	var can_buy: bool = prep and (ms.can_shop() or boss_active)
+	if boss_active:
 		top_label.text = "最終決戰 第 %d / %d 波　共用生命 %d　筆芯 %d mm（利息 +%d）　%s　場上 %d / %d" % [
 			gs.wave, gs.max_wave(), gs.life, gs.mm, gs.interest(), _level_text(),
 			gs.board.size(), gs.pop_cap()]
@@ -356,14 +372,6 @@ func _refresh() -> void:
 	btn_xp.disabled = not can_buy or gs.mm < GameState.XP_COST or gs.level >= GameState.MAX_LEVEL
 	_refresh_reward()
 	btn_sell.disabled = not prep or selected == null
-	btn_speed.text = "播放速度 ×%s" % str(SPEEDS[speed_idx])
-	btn_start.visible = mode != "shop" and phase != "over"
-	btn_start.disabled = not prep or gs.board.is_empty()
-	btn_retreat.visible = mode == "encounter" and phase == "battle" and tick_f * BattleSim.DT <= RETREAT_WINDOW
-	btn_retreat.text = "撤退（扣 %d 血）" % MapState.RETREAT_HP
-	btn_back.visible = mode != "boss" and (phase == "prep" or phase == "result")
-	btn_continue.visible = mode == "boss" and (phase == "result" or phase == "over")
-	btn_continue.text = "重新開始" if phase == "over" else "繼續"
 	_refresh_board_static()
 	_refresh_synergy()
 	_refresh_info()
@@ -376,8 +384,6 @@ func _level_text() -> String:
 
 
 func _refresh_board_static() -> void:
-	if phase == "battle" or phase == "result":
-		return
 	var list: Array = []
 	for c in gs.board:
 		var inst: Dictionary = gs.board[c]
@@ -386,11 +392,7 @@ func _refresh_board_static() -> void:
 		var hp := float(def.hp) * sm + float(inst.bonus_hp)
 		list.append({"cell": c, "id": def.id, "name": def.name, "school": def.school,
 				"star": inst.star, "team": 0, "hp": hp, "max_hp": hp})
-	for d in _current_enemies():
-		list.append({"cell": d.cell, "id": d.id, "name": d.name, "school": "害蟲",
-				"star": 1, "team": 1, "hp": d.hp, "max_hp": d.hp})
 	board_view.static_units = list
-	board_view.sim = null
 	board_view.selected_cell = selected.c if selected != null and selected.t == "board" else Vector2i(-1, -1)
 	board_view.queue_redraw()
 
@@ -423,13 +425,8 @@ func _refresh_synergy() -> void:
 		else:
 			text = _tier_text(tiers, int(info.count), int(info.tier))
 		lines.append("◇ %s %d　%s" % [tr, int(info.count), text])
-	if mode == "boss":
-		lines.append("\n本波敵人：%s" % gs.wave_list()[gs.wave - 1].label)
-	elif mode == "encounter":
-		var t := ms.terrain_of(ms.pos)
-		lines.append("\n敵人：%s　地形「%s」" % [pending_label, t])
-		lines.append(DB.terrain[t].desc)
-		lines.append("打不贏可以在開戰 10 秒內撤退，換一格地形再打。")
+	if boss_active and gs.state == "playing":
+		lines.append("\n下一波：%s（回地圖按「佈陣」可以先看牠們會站在哪）" % gs.wave_list()[gs.wave - 1].label)
 	syn_label.text = "\n".join(lines)
 
 
@@ -563,117 +560,27 @@ func _on_sell() -> void:
 	_refresh()
 
 
-func _on_speed() -> void:
-	speed_idx = (speed_idx + 1) % SPEEDS.size()
-	_refresh()
-
-
-func _on_start() -> void:
-	selected = null
-	phase = "battle"
-	retreated = false
-	sim = gs.make_sim(_current_enemies(), pending_terrain)
-	last_result = sim.run()
-	tick_f = 0.0
-	board_view.sim = sim
-	board_view.selected_cell = Vector2i(-1, -1)
-	msg_label.text = "戰鬥中…"
-	_refresh()
-
-
-func _on_retreat() -> void:
-	if mode != "encounter" or phase != "battle":
-		return
-	retreated = true
-	phase = "result"
-	msg_label.text = "撤退！怪群留在原地，換個地形再來過。"
-	_refresh()
-
-
 func _process(delta: float) -> void:
 	if _demo:
-		_demo_tick()        # 要放在最前面，下面的戰鬥分支會提早 return
-	if phase == "field" and explore.battle != null:
-		var dt: float = delta * float(SPEEDS[speed_idx])
-		explore.battle_tick += dt / BattleSim.DT
-		ms.time_left = maxf(0.0, ms.time_left - dt)     # 打架的時候時間照常在走
-		var last := float(explore.battle.frames.size() - 1) + BoardView.FADE_TICKS + 2.0
-		explore.btn_retreat.visible = explore.battle_tick * BattleSim.DT <= FIELD_RETREAT
-		if explore.battle_tick >= last or ms.time_left <= 0.0:
-			_finish_field_battle()
-		else:
-			explore.update_battle_hud()    # 戰鬥中只更新時間列，不必每幀重建整個面板
+		_demo_tick()
+	if phase != "field" or explore.battle == null:
 		return
-	if phase == "battle" and sim != null:
-		tick_f += delta * SPEEDS[speed_idx] / BattleSim.DT
-		var last := float(sim.frames.size() - 1)
-		# 模擬在「最後一隻死掉」的那個 tick 就停了，所以要多播一小段，
-		# 牠的淡出才有時間演完；不然屍體會定格留在畫面上。
-		var post := last + BoardView.FADE_TICKS + 2.0
-		if tick_f >= post:
-			tick_f = post
-			_end_battle()
-		board_view.tick_f = tick_f
-		board_view.queue_redraw()
-		if phase == "battle" and tick_f <= last:
-			_show_countdown()
-		if btn_retreat.visible and tick_f * BattleSim.DT > RETREAT_WINDOW:
-			btn_retreat.visible = false
-
-
-## 戰鬥中顯示 40 秒倒數；還能撤退時一併提示剩幾秒
-func _show_countdown() -> void:
-	var elapsed: float = tick_f * BattleSim.DT
-	var left: float = maxf(0.0, BattleSim.MAX_TICKS * BattleSim.DT - elapsed)
-	var text := "戰鬥中…　倒數 %.1f 秒" % left
-	if mode == "encounter":
-		var window: float = RETREAT_WINDOW - elapsed
-		text += "　｜撤退還剩 %.1f 秒" % window if window > 0.0 else "　｜已經不能撤退了"
-	msg_label.text = text
-
-
-func _end_battle() -> void:
-	phase = "result"
-	var r := last_result
-	var secs: float = float(r.ticks) * BattleSim.DT
-	if r.winner == 0:
-		msg_label.text = "勝利！存活 %d 件（花了 %.1f 秒）" % [r.player_alive, secs]
-	elif mode == "boss":
-		msg_label.text = "敗北，剩 %d 隻敵人，扣 %d 共用生命" % [r.enemy_alive, int(r.enemy_alive) * 2 + gs.wave]
+	var dt: float = delta * explore.speed()
+	explore.battle_tick += dt / BattleSim.DT
+	if not boss_active:
+		ms.time_left = maxf(0.0, ms.time_left - dt)     # 打架的時候時間照常在走（決戰時天已經黑了）
+		explore.btn_retreat.visible = explore.battle_tick * BattleSim.DT <= FIELD_RETREAT
+	if explore.battle_tick >= explore.fx.end_tick() or (not boss_active and ms.time_left <= 0.0):
+		_finish_field_battle()
 	else:
-		msg_label.text = "敗北（剩 %d 隻敵人），扣 %d 血量，怪群留在原地" % [r.enemy_alive, MapState.LOSE_HP]
-	_refresh()
+		explore.update_battle_hud()    # 戰鬥中只更新時間列，不必每幀重建整個面板
 
 
 func _on_back_to_map() -> void:
-	if phase == "result":
-		if mode == "encounter":
-			if not retreated and last_result.winner == 0:
-				gs.on_encounter_won()
-			ms.finish_encounter(encounter_cell, last_result, retreated)
-		sim = null
-		board_view.sim = null
-	if ms.day_over:
+	if ms.day_over and not boss_active:
 		_on_day_finished()
 		return
 	_show_explore()
-
-
-func _on_continue() -> void:
-	if phase == "over":
-		get_tree().reload_current_scene()
-		return
-	gs.apply_result(last_result)
-	sim = null
-	board_view.sim = null
-	if gs.state == "won" or gs.state == "lost":
-		phase = "over"
-		msg_label.text = ("通關！你守住了這個家。\n" if gs.state == "won" else "共用生命歸零，家被佔領了…\n") + _summary()
-		_refresh()
-		return
-	phase = "prep"
-	msg_label.text = "準備下一波：調整陣容、買東西"
-	_refresh()
 
 
 func _summary() -> String:
@@ -746,8 +653,18 @@ func _demo_tick() -> void:
 	elif phase == "field" and explore.battle_tick > 25.0 \
 			and not FileAccess.file_exists("res://shots/field_battle.png"):
 		_save_shot("field_battle")
-	elif _frames > 600 or (phase == "explore" and _frames > 90):
+	elif not boss_active and phase == "explore" and _frames > 90:
 		_save_shot("result")
+		_on_day_finished()                     # 直接天黑，示範巢穴與決戰
+		_demo_boss_frame = _frames
+	elif boss_active and _frames == _demo_boss_frame + 6:
+		_save_shot("boss_lair")
+		_on_boss_fight()
+	elif boss_active and phase == "field" and explore.battle_tick > 30.0 \
+			and not FileAccess.file_exists("res://shots/boss_battle.png"):
+		_save_shot("boss_battle")
+		get_tree().quit()
+	elif _frames > 900:
 		get_tree().quit()
 
 

@@ -348,3 +348,12 @@ static func draw_cell_icon(c: CanvasItem, kind: String, center: Vector2, r: floa
 			_rect(c, center, r, -0.6, -0.7, 1.2, 0.25, Color(0.72, 0.75, 0.8))
 			_rect(c, center, r, -0.45, 0.2, 0.9, 0.42, PAPER)
 			_circ(c, center, r, 0.5, -0.2, 0.1, Color(0.4, 0.85, 0.5))
+		"lair":      # 魔王巢穴：地板上一個長滿黴菌的黑洞，裡面有發光的眼睛
+			_circ(c, center, r, 0.0, 0.05, 0.95, Color(0.22, 0.35, 0.18))
+			_circ(c, center, r, 0.0, 0.1, 0.7, Color(0.05, 0.06, 0.05))
+			for p in [[-0.75, -0.3], [0.7, -0.35], [-0.5, 0.55], [0.6, 0.5], [0.0, -0.75]]:
+				_circ(c, center, r, p[0], p[1], 0.22, Color(0.36, 0.55, 0.28))
+			_circ(c, center, r, -0.22, 0.05, 0.13, Color(0.75, 1.0, 0.4))
+			_circ(c, center, r, 0.22, 0.05, 0.13, Color(0.75, 1.0, 0.4))
+			_circ(c, center, r, -0.22, 0.07, 0.06, INK)
+			_circ(c, center, r, 0.22, 0.07, 0.06, INK)

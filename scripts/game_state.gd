@@ -7,7 +7,6 @@ const BattleSim = preload("res://scripts/sim/battle_sim.gd")
 
 const BENCH_SIZE := 8
 const SHOP_SIZE := 5
-const MAX_WAVE := 10
 const START_LIFE := 100
 const BOSS_LIFE_BASE := 30      # 最終決戰的共用生命底線
 const START_MM := 20            # demo 規格：開局 20 mm
@@ -30,7 +29,6 @@ const XP_COST := 4
 const BASE_INCOME := 5
 const FREE_XP_PER_ROUND := 2
 const PLAYER_Y_MIN := 4
-const ENEMY_X_ORDER := [3, 4, 2, 5, 1, 6, 0, 7]
 # 抽屜等級 → 費用 1..4 的出現權重
 const ODDS := [[80, 20, 0, 0], [60, 35, 5, 0], [40, 40, 18, 2], [25, 35, 30, 10], [15, 25, 35, 25], [10, 20, 30, 40]]
 # 抽屜等級 → 商店直接刷出 2 星的機率（%）；只對費用 1–2 的棋子生效
@@ -49,7 +47,6 @@ var bench: Array = []
 var board: Dictionary = {}     # Vector2i -> instance
 var next_uid := 1
 var state := "playing"         # playing | won | lost
-var wave_set := "normal"       # normal（10 波練習）| boss（探索結尾的 5 波決戰）
 var pool: Dictionary = {}      # 棋子 id -> 卡池剩餘張數
 var refreshes := 0             # 這場戰鬥已經刷新幾次
 var pending_reward: Array = [] # 升星獎勵：三選一的免費招募
@@ -75,7 +72,7 @@ func pop_cap() -> int:
 
 
 func wave_list() -> Array:
-	return DB.boss_waves if wave_set == "boss" else DB.waves
+	return DB.boss_waves         # 只剩最終決戰會用到波次（10 波練習模式已移除）
 
 
 func max_wave() -> int:
@@ -586,62 +583,6 @@ static func _merge_fx(into: Dictionary, from: Dictionary) -> void:
 			into[k] = v
 
 
-# ── 戰鬥 ────────────────────────────────────────────────────
-
-func player_descs() -> Array:
-	var syn := synergies()
-	var tsyn := trait_synergies()
-	var out: Array = []
-	for c in board:
-		var inst: Dictionary = board[c]
-		var def := unit_def(inst)
-		var sm := star_mult(inst.star)
-		var fx: Dictionary = {}
-		if syn.has(def.school):
-			_merge_fx(fx, syn[def.school].fx)
-		for tr in def.traits:
-			if tsyn.has(tr):
-				_merge_fx(fx, tsyn[tr].fx)
-		out.append({
-			"id": def.id, "name": def.name, "school": def.school, "traits": def.traits,
-			"star": inst.star, "smult": sm,
-			"hp": float(def.hp) * sm + float(inst.bonus_hp), "atk": float(def.atk) * sm,
-			"aspd": def.aspd, "range": def.range, "move": def.move, "armor": def.armor,
-			"skill": def.get("skill", {}), "cell": c, "fx": fx,
-		})
-	return out
-
-
-func enemy_descs(wave_no: int) -> Array:
-	return build_enemy_descs(wave_list()[wave_no - 1].enemies)
-
-
-## groups：[{id, count, mult}, ...] → 排好位置的敵人 desc 陣列
-func build_enemy_descs(groups: Array) -> Array:
-	var entries: Array = []
-	for group in groups:
-		var def: Dictionary = DB.enemies[group.id]
-		for i in int(group.count):
-			entries.append({"def": def, "mult": float(group.mult)})
-	# 近戰排前排，遠程排後排
-	entries.sort_custom(func(a, b): return a.def.range < b.def.range)
-	var out: Array = []
-	var slot := 0
-	for e in entries:
-		var y := 3 - slot / ENEMY_X_ORDER.size()
-		var x: int = ENEMY_X_ORDER[slot % ENEMY_X_ORDER.size()]
-		slot += 1
-		if y < 0:
-			break
-		var def: Dictionary = e.def
-		out.append({
-			"id": def.id, "name": def.name, "school": "害蟲", "traits": [], "star": 1, "smult": e.mult,
-			"hp": float(def.hp) * e.mult, "atk": float(def.atk) * e.mult,
-			"aspd": def.aspd, "range": def.range, "move": def.move, "armor": def.armor,
-			"skill": def.get("skill", {}), "cell": Vector2i(x, y), "fx": {},
-		})
-	return out
-
 
 ## 陣形中心：準備畫面上的這一格，對應到大地圖上玩家站的位置。
 ## 其他棋子依照和它的相對位置，在玩家周圍展開。
@@ -731,18 +672,9 @@ func field_enemy_descs(groups: Array, arena: Dictionary, center_map: Vector2i,
 	return out
 
 
-## enemies 省略時打本波；terrain_fx 省略時無地形效果
-func make_sim(enemies: Array = [], terrain_fx: Dictionary = {}) -> BattleSim:
-	var sim := BattleSim.new()
-	var foes: Array = enemies if not enemies.is_empty() else enemy_descs(wave)
-	sim.setup(rng.randi(), player_descs(), foes, terrain_fx)
-	return sim
-
-
 ## 探索結束 → 最終決戰：共用生命 = 底線 + 帶進來的剩餘個人血量。
 ## 加底線是因為血量剩個位數時決戰會變成形式，完全打不起來。
 func start_boss(carry_hp: int) -> void:
-	wave_set = "boss"
 	wave = 1
 	life = BOSS_LIFE_BASE + carry_hp
 	state = "playing"

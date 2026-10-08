@@ -7,8 +7,6 @@ const GameState = preload("res://scripts/game_state.gd")
 const BattleSim = preload("res://scripts/sim/battle_sim.gd")
 
 const STEP_SECONDS := 3.0        # 每走一格扣的時間（地圖變大後從 5 秒下修）
-const PREP_SECONDS := 30.0       # 擺陣時間，也算進時段
-const RETREAT_SECONDS := 10.0    # 撤退：只扣開戰後 10 秒
 const RETREAT_HP := 5
 const LOSE_HP := 12              # 戰敗扣的個人血量
 const OCCUPIED_HP := 5           # 待在被家人佔用的房間，每走一格扣血
@@ -20,6 +18,8 @@ const COPIER_USES := 2
 const REST_HP := 5
 const ARENA_PAD := 6             # 戰場在玩家與怪群之外多留幾格
 const FIELD_MAX_TICKS := 900     # 就地開打沒有 40 秒上限，只留一個很長的安全上限（90 秒）
+const LATE_STEPS_PER_LIFE := 3   # 天黑時離巢穴每 3 格，共用生命 −1
+const BOSS_MIN_LIFE := 5         # 遲到再久，決戰至少留這麼多共用生命，不會一開打就輸
 const CHEST_MM := [3, 6]
 
 var rng := RandomNumberGenerator.new()
@@ -31,6 +31,7 @@ var room_at: Dictionary = {}       # Vector2i -> 房間名
 var rooms_by_id: Dictionary = {}   # 房間名 -> map.json 的房間定義
 var terrain_at: Dictionary = {}    # Vector2i -> 地形名
 var cells: Dictionary = {}         # Vector2i -> {kind, key?, label?}
+var lair := Vector2i(-1, -1)       # 魔王巢穴（開局隨機，藏在迷霧裡）
 var walls: Dictionary = {}         # Vector2i -> true，家具之類走不進去的格子
 var heights: Dictionary = {}       # Vector2i -> int，地板高度
 var discovered: Dictionary = {}    # Vector2i -> true，看過的格子（沒看過的是黑的）
@@ -71,6 +72,7 @@ func start(seed_value: int, game_state: GameState) -> void:
 	vision = int(m.get("vision", 5))
 	_build_furniture()
 	_place_contents()
+	_place_lair()
 	_reveal(pos)
 	time_left = float(m.segments[0].seconds)
 	_log("【%s】%s" % [segment().name, segment().desc])
@@ -172,8 +174,9 @@ func occupied_rooms() -> Array:
 	return segment().occupied
 
 
+## 天黑之後全家都睡了，沒有房間被佔用（決戰時不該還畫著白天的紅色警戒區）
 func is_occupied(cell: Vector2i) -> bool:
-	return room_at.get(cell, "") in occupied_rooms()
+	return not day_over and room_at.get(cell, "") in occupied_rooms()
 
 
 func terrain_of(cell: Vector2i) -> String:
@@ -352,41 +355,9 @@ func encounter_groups(cell: Vector2i) -> Array:
 	return groups
 
 
-func encounter_enemies(cell: Vector2i) -> Array:
-	return gs.build_enemy_descs(encounter_groups(cell))
-
-
 ## 回傳發動攻擊的那一格（玩家目前位置）的地形效果
 func battle_terrain_fx() -> Dictionary:
 	return DB.terrain_fx(terrain_of(pos))
-
-
-## result：BattleSim.run() 的結果；retreated 為 true 時只扣撤退成本
-## charge_time 為 false 時不扣時間 —— 就地開打的時間是在戰鬥播放中即時流掉的，
-## 這裡再扣一次就變成重複計費。
-func finish_encounter(cell: Vector2i, result: Dictionary, retreated: bool,
-		charge_time := true) -> void:
-	battles_fought += 1
-	var spent := PREP_SECONDS if charge_time else 0.0
-	if retreated:
-		if charge_time:
-			spent += RETREAT_SECONDS
-		battle_seconds += RETREAT_SECONDS
-		_hurt(RETREAT_HP, "撤退：扣 %d 點血量，怪群留在原地" % RETREAT_HP)
-	else:
-		var elapsed: float = float(result.ticks) * 0.1
-		if charge_time:
-			spent += elapsed
-		battle_seconds += elapsed
-		if result.winner == 0:
-			_reward(cell, elapsed)
-		else:
-			_hurt(LOSE_HP, "打輸了：扣 %d 點血量，怪群留在原地" % LOSE_HP)
-	# 刷新費用與升星獎勵都以「一場戰鬥」為單位
-	gs.reset_refresh()
-	gs.drop_merge_reward()
-	time_left = maxf(0.0, time_left - spent)
-	_check_time()
 
 
 ## 打贏怪群的獎勵：筆芯（依房間倍率）、房間特性的回血／經驗，並清掉該格
@@ -417,10 +388,23 @@ func _reward(cell: Vector2i, secs: float) -> void:
 
 ## 切戰場、在玩家周圍展開陣形、把整場算完。畫面之後只負責播放。
 func begin_field_battle(cell: Vector2i) -> Dictionary:
+	return _begin_battle(cell, encounter_groups(cell))
+
+
+## 最終決戰的一波：在巢穴那塊地圖上打，敵人從巢穴散開
+func begin_boss_wave() -> Dictionary:
+	return _begin_battle(lair, boss_groups())
+
+
+func boss_groups() -> Array:
+	return DB.boss_waves[clampi(gs.wave, 1, DB.boss_waves.size()) - 1].enemies
+
+
+func _begin_battle(cell: Vector2i, groups: Array) -> Dictionary:
 	var arena := build_arena(cell)
 	var used: Dictionary = {}
 	var allies: Array = gs.field_player_descs(arena, pos, used)
-	var foes: Array = gs.field_enemy_descs(encounter_groups(cell), arena, cell, used)
+	var foes: Array = gs.field_enemy_descs(groups, arena, cell, used)
 	var sim := BattleSim.new()
 	sim.setup(gs.rng.randi(), allies, foes, battle_terrain_fx(), arena)
 	var result: Dictionary = sim.run()
@@ -457,6 +441,92 @@ func end_field_battle(battle: Dictionary, played: float, retreated: bool) -> Str
 	gs.drop_merge_reward()
 	_check_time()
 	return outcome
+
+
+# ── 巢穴與最終決戰 ──────────────────────────────────────────
+
+## 巢穴隨機放在起點以外的某個房間，和其他東西一樣藏在迷霧裡，要自己找到。
+## 越早找到，就越早知道晚上該收在哪附近（企劃書：越早猜出來，越早知道最後要往哪裡集合）。
+func _place_lair() -> void:
+	var start_room: String = room_at.get(pos, "")
+	var rooms: Array = DB.map.rooms.filter(func(r): return r.id != start_room)
+	for attempt in 40:
+		var room: Dictionary = rooms[rng.randi() % rooms.size()]
+		var r: Array = room.rect
+		var c := Vector2i(int(r[0]) + rng.randi() % int(r[2]), int(r[1]) + rng.randi() % int(r[3]))
+		if c != pos and not walls.has(c) and not cells.has(c):
+			lair = c
+			cells[c] = {"kind": "lair", "label": "巢穴"}
+			return
+
+
+## 天黑：魔王在巢穴現身，玩家趕過去。離巢穴越遠，到得越晚，共用生命扣越多
+## （企劃書：還沒趕到的人那一路的怪會先打進來，所以探索時不能跑太遠）。
+## 回傳 {distance, late, found}。
+func arrive_at_lair() -> Dictionary:
+	var dist := 0
+	if pos != lair:
+		var path := path_to(lair)
+		dist = path.size() if not path.is_empty() else absi(pos.x - lair.x) + absi(pos.y - lair.y)
+	var late := dist / LATE_STEPS_PER_LIFE
+	var found := discovered.has(lair)
+	pos = _boss_anchor()
+	_reveal(pos)
+	_reveal(lair)
+	if dist == 0:
+		_log("你就在巢穴旁邊，第一時間擋下了魔王。")
+	else:
+		_log("天黑了！你離巢穴 %d 格，趕過去的路上魔王已經在作亂：共用生命 −%d" % [dist, late])
+	return {"distance": dist, "late": late, "found": found}
+
+
+## 天黑 → 最終決戰開始：趕到巢穴，共用生命 = 底線 + 剩餘血量 − 遲到的懲罰。
+## 遊戲畫面和自動測試都走這裡。
+func start_final_battle() -> Dictionary:
+	var arrival := arrive_at_lair()
+	gs.start_boss(hp)
+	gs.life = maxi(BOSS_MIN_LIFE, gs.life - int(arrival.late))
+	return arrival
+
+
+## 結算決戰的一波（輸贏、共用生命、收入都交給 GameState.apply_result）。回傳 "win" / "lose"。
+func end_boss_wave(battle: Dictionary) -> String:
+	var res: Dictionary = battle.result
+	var wave_no: int = gs.wave
+	var before: int = gs.life
+	battles_fought += 1
+	battle_seconds += float(battle.seconds)
+	gs.apply_result(res)
+	var won: bool = int(res.winner) == 0
+	if won:
+		_log("決戰第 %d 波：守住了！" % wave_no)
+	else:
+		_log("決戰第 %d 波：沒擋下來，剩 %d 隻，共用生命 −%d" % [
+				wave_no, int(res.enemy_alive), before - gs.life])
+	if gs.state == "won":
+		_log("通關！你守住了這個家。")
+	elif gs.state == "lost":
+		_log("共用生命歸零，家被佔領了…")
+	return "win" if won else "lose"
+
+
+## 決戰時玩家站的位置：巢穴往外幾格，讓陣形和魔王的軍隊分在兩邊
+func _boss_anchor() -> Vector2i:
+	for d in [Vector2i(0, 4), Vector2i(4, 0), Vector2i(0, -4), Vector2i(-4, 0),
+			Vector2i(3, 3), Vector2i(-3, 3), Vector2i(3, -3), Vector2i(-3, -3),
+			Vector2i(0, 3), Vector2i(3, 0), Vector2i(0, -3), Vector2i(-3, 0)]:
+		var c: Vector2i = lair + d
+		if in_bounds(c) and not walls.has(c) and not has_monster(c):
+			return c
+	return lair
+
+
+## 走到巢穴要幾格（找到巢穴之後，畫面會提示晚上別跑太遠）
+func lair_distance() -> int:
+	if pos == lair:
+		return 0
+	var path := path_to(lair)
+	return path.size() if not path.is_empty() else absi(pos.x - lair.x) + absi(pos.y - lair.y)
 
 
 # ── 血量與時段 ──────────────────────────────────────────────

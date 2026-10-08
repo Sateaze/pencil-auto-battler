@@ -4,7 +4,6 @@ extends RefCounted
 static var units: Dictionary = {}       # id -> unit def
 static var enemies: Dictionary = {}     # id -> enemy def
 static var schools: Dictionary = {}     # school name -> {color, role, tiers}
-static var waves: Array = []
 static var boss_waves: Array = []
 static var terrain: Dictionary = {}     # terrain name -> {mark, color, desc, fx}
 static var traits: Dictionary = {}      # trait name -> {role, tiers}
@@ -25,7 +24,6 @@ static func load_all() -> void:
 	for e in _read("res://data/enemies.json"):
 		enemies[e.id] = e
 	schools = _read("res://data/schools.json")
-	waves = _read("res://data/waves.json")
 	boss_waves = _read("res://data/boss_waves.json")
 	terrain = _read("res://data/terrain.json")
 	map = _read("res://data/map.json")

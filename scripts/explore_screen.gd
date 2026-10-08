@@ -12,11 +12,16 @@ const GameState = preload("res://scripts/game_state.gd")
 const UnitInfo = preload("res://scripts/unit_info.gd")
 const Art = preload("res://scripts/art.gd")
 const UITheme = preload("res://scripts/ui_theme.gd")
+const BattleFx = preload("res://scripts/battle_fx.gd")
 
 signal attack_requested(cell: Vector2i)
 signal prep_requested()
 signal day_finished()
 signal retreat_requested()
+signal boss_fight_requested()
+signal restart_requested()
+
+const SPEEDS := [1.0, 1.5, 3.0]   # 戰鬥播放速度
 
 const TW := 48.0                  # 菱形格寬
 const TH := 26.0                  # 菱形格高
@@ -26,6 +31,7 @@ const PANEL_X := 912.0
 const MINI := Rect2(922, 78, 324, 240)     # 小地圖
 const MINI_CELL := 6.0
 const SCREEN_BG := Color(0.09, 0.10, 0.13)   # 和 main.gd 的背景同色
+const FIGHTER_R := 15.0                      # 大地圖戰鬥時棋子的半徑
 
 
 var ms: MapState
@@ -36,7 +42,13 @@ var cam := Vector2.ZERO           # 攝影機中心（畫面座標，未套用�
 var cam_ready := false
 
 # 就地開打：戰鬥直接畫在大地圖上，不換畫面
-var battle = null                 # BattleSim
+var fx := BattleFx.new()           # 就地開打的戰鬥表演（撲擊、閃白、彈道、數字…）
+## 一指定戰鬥就交給表演模組。以前要等畫面第一次繪製才交，開打第一幀主程式
+## 問「什麼時候播完」時拿到空值，整場戰鬥直接壞掉。
+var battle = null:                 # BattleSim
+	set(v):
+		battle = v
+		fx.set_sim(v)
 var battle_origin := Vector2i.ZERO   # 戰場左上角在大地圖上的位置
 var battle_cell := Vector2i(-1, -1)  # 正在打的那群怪原本所在的格子（開打時不再畫牠的圖示）
 var battle_tick := 0.0
@@ -50,6 +62,14 @@ var btn_copy: Button
 var btn_end: Button
 var btn_retreat: Button
 var btn_formation: Button
+var btn_speed: Button
+var btn_boss: Button
+var speed_idx := 1
+
+# 最終決戰：在巢穴那塊地圖上打五波，期間不能亂跑，只能佈陣、整備、開打下一波
+var boss_mode := false
+var boss_wave_text := ""          # 由 main 填：第幾波、共用生命等
+var game_over := false
 var attack_buttons: Array = []
 
 # 直接在地圖上佈陣：以玩家所在格為中心，把陣形畫在周圍的格子上
@@ -70,8 +90,6 @@ var _cell_col: Dictionary = {}     # 格子 -> 房間底色＋手繪色差＋家
 var _max_lift := 0.0               # 最高的格子抬升多少像素（決定要往下多掃幾排）
 var _mini_tex: ImageTexture        # 小地圖畫成一張圖，只在內容變了才重畫
 var _mini_sig := ""
-var _death_ticks: Dictionary = {}  # 就地開打：uid -> 陣亡的 tick
-var _battle_ref = null
 var _ground_mesh := ArrayMesh.new()   # 整片已探索的地面，世界座標
 var _occ_mesh := ArrayMesh.new()      # 家人佔用的格子，疊會呼吸的紅光用
 var _outline := PackedVector2Array()  # 所有格子的邊線（成對的線段）
@@ -108,13 +126,18 @@ func _ready() -> void:
 		add_child(b)
 		attack_buttons.append(b)
 	# 三顆按鈕排在地圖下緣
-	btn_prep = _button("整備／抽屜商店", Vector2(16, 762), Vector2(200, 32), func(): prep_requested.emit())
-	btn_copy = _button("影印機（5 mm）", Vector2(226, 762), Vector2(170, 32), _on_copy)
-	btn_end = _button("結束這個時段", Vector2(406, 762), Vector2(170, 32), _on_end_segment)
-	btn_retreat = _button("撤退", Vector2(586, 762), Vector2(150, 32), func(): retreat_requested.emit())
+	btn_prep = _button("整備／抽屜商店", Vector2(16, 762), Vector2(160, 32), func(): prep_requested.emit())
+	btn_copy = _button("影印機（5 mm）", Vector2(186, 762), Vector2(140, 32), _on_copy)
+	btn_end = _button("結束這個時段", Vector2(336, 762), Vector2(140, 32), _on_end_segment)
+	btn_formation = _button("佈陣", Vector2(486, 762), Vector2(130, 32), _toggle_formation)
+	btn_speed = _button("", Vector2(626, 762), Vector2(120, 32), _on_speed)
+	btn_retreat = _button("撤退", Vector2(756, 762), Vector2(130, 32), func(): retreat_requested.emit())
 	btn_retreat.visible = false
-	btn_formation = _button("佈陣", Vector2(746, 762), Vector2(140, 32), _toggle_formation)
-	for b in [btn_prep, btn_copy, btn_end, btn_retreat, btn_formation]:
+	# 最終決戰：開打下一波／重新開始
+	btn_boss = _button("", Vector2(PANEL_X + 8, 548), Vector2(336, 40), _on_boss_pressed)
+	btn_boss.add_theme_font_size_override("font_size", 15)
+	btn_boss.visible = false
+	for b in [btn_prep, btn_copy, btn_end, btn_retreat, btn_formation, btn_speed]:
 		b.add_theme_font_size_override("font_size", 13)
 	# 佈陣模式下才出現的備戰席
 	for i in GameState.BENCH_SIZE:
@@ -142,6 +165,22 @@ func _hover_loc(loc) -> void:
 	_refresh_cell_label()
 
 
+func speed() -> float:
+	return float(SPEEDS[speed_idx])
+
+
+func _on_speed() -> void:
+	speed_idx = (speed_idx + 1) % SPEEDS.size()
+	refresh()
+
+
+func _on_boss_pressed() -> void:
+	if game_over:
+		restart_requested.emit()
+	else:
+		boss_fight_requested.emit()
+
+
 func _toggle_formation() -> void:
 	formation_mode = not formation_mode
 	sel = null
@@ -155,17 +194,30 @@ func build_foe_preview() -> void:
 	preview_label = ""
 	if ms == null or not formation_mode or battle != null:
 		return
-	var adj: Array = ms.adjacent_monsters()
-	if adj.is_empty():
-		return
-	var cell: Vector2i = adj[0]
+	# 決戰時預覽的是下一波魔王軍；平常是旁邊那一群
+	var cell: Vector2i
+	var groups: Array
+	var label: String
+	if boss_mode:
+		if game_over:
+			return
+		cell = ms.lair
+		groups = ms.boss_groups()
+		label = "決戰第 %d 波" % ms.gs.wave
+	else:
+		var adj: Array = ms.adjacent_monsters()
+		if adj.is_empty():
+			return
+		cell = adj[0]
+		groups = ms.encounter_groups(cell)
+		label = ms.cell_at(cell).label
 	var arena := ms.build_arena(cell)
 	var origin: Vector2i = arena.origin
 	var used: Dictionary = {}
 	ms.gs.field_player_descs(arena, ms.pos, used)      # 先佔位，敵人才不會疊上來
-	for d in ms.gs.field_enemy_descs(ms.encounter_groups(cell), arena, cell, used):
+	for d in ms.gs.field_enemy_descs(groups, arena, cell, used):
 		foe_preview.append({"cell": Vector2i(d.cell) + origin, "id": d.id})
-	preview_label = "%s（%d 隻）" % [ms.cell_at(cell).label, foe_preview.size()]
+	preview_label = "%s（%d 隻）" % [label, foe_preview.size()]
 
 
 ## 地圖格 ↔ 陣形格。陣形是相對位置，所以你走到哪，陣形就跟到哪。
@@ -252,6 +304,7 @@ func _process(delta: float) -> void:
 		cam_ready = true
 	else:
 		cam = cam.lerp(want, clampf(delta * 7.0, 0.0, 1.0))
+	fx.anim_t += delta
 	queue_redraw()
 
 
@@ -301,7 +354,7 @@ func pick_formation_cell(p: Vector2) -> Vector2i:
 # ── 輸入 ────────────────────────────────────────────────────
 
 func _gui_input(ev: InputEvent) -> void:
-	if ms == null or ms.day_over or battle != null:
+	if ms == null or battle != null:
 		return          # 打架的時候不能亂跑
 	if ev is InputEventMouseMotion:
 		if formation_mode:
@@ -309,6 +362,8 @@ func _gui_input(ev: InputEvent) -> void:
 			var b := board_cell_of(fc) if ms.in_bounds(fc) else Vector2i(-9, -9)
 			_hover_loc({"t": "board", "c": b} if is_formation_cell(b) else null)
 			return
+		if ms.day_over or boss_mode:
+			return      # 天黑之後只能佈陣，不能移動
 		var c := pick_cell(ev.position)
 		if c != hover:
 			hover = c
@@ -319,6 +374,8 @@ func _gui_input(ev: InputEvent) -> void:
 			return
 		if formation_mode:
 			_formation_click(pick_formation_cell(ev.position))
+			return
+		if ms.day_over or boss_mode:
 			return
 		var c := pick_cell(ev.position)
 		if not ms.in_bounds(c) or not ms.discovered.has(c):
@@ -419,23 +476,33 @@ func refresh() -> void:
 	var seg: Dictionary = ms.segment()
 	var gs = ms.gs
 	var xp: String = "最高等級" if gs.level >= gs.MAX_LEVEL else "經驗 %d/%d" % [gs.xp, gs.xp_need()]
-	top_label.text = "【%s】%s　　血量 %d/%d　　筆芯 %d mm　　抽屜 Lv.%d（%s）　　影印機剩 %d 次" % [
-		seg.name, seg.desc, ms.hp, MapState.MAX_HP, gs.mm, gs.level, xp, ms.copier_left]
-	time_label.text = "剩餘時間 %d 秒（還能走 %d 格，每格 %.1f 秒）　⚠ 危險：%s　　已探索 %d / %d 格" % [
-		int(ms.time_left), ms.steps_affordable(), ms.step_cost(),
-		"、".join(seg.occupied), ms.discovered.size(), ms.width * ms.height]
+	if boss_mode:
+		top_label.text = boss_wave_text
+		time_label.text = "天黑了，全家睡著，黴菌之王在巢穴現身。不能再移動，只能佈陣、整備，然後開打下一波。"
+	else:
+		top_label.text = "【%s】%s　　血量 %d/%d　　筆芯 %d mm　　抽屜 Lv.%d（%s）　　影印機剩 %d 次" % [
+			seg.name, seg.desc, ms.hp, MapState.MAX_HP, gs.mm, gs.level, xp, ms.copier_left]
+		time_label.text = "剩餘時間 %d 秒（還能走 %d 格，每格 %.1f 秒）　⚠ 危險：%s　　%s" % [
+			int(ms.time_left), ms.steps_affordable(), ms.step_cost(),
+			"、".join(seg.occupied), _lair_hint()]
 	var fighting: bool = battle != null
-	var monsters := ms.adjacent_monsters()
+	var monsters := ms.adjacent_monsters() if not boss_mode else []
 	for i in attack_buttons.size():
 		var b: Button = attack_buttons[i]
 		b.visible = not fighting and i < monsters.size()
 		if b.visible:
 			b.text = "主動出擊：%s（在「%s」開打）" % [
 				ms.cell_at(monsters[i]).label, ms.terrain_of(ms.pos)]
-	btn_copy.disabled = fighting or not ms.can_copy()
-	btn_end.disabled = fighting or formation_mode or ms.day_over
-	btn_prep.disabled = fighting
-	btn_formation.disabled = fighting
+	btn_boss.visible = boss_mode and not fighting
+	if game_over:
+		btn_boss.text = "重新開始"
+	elif boss_mode:
+		btn_boss.text = "開打決戰第 %d 波" % gs.wave
+	btn_copy.disabled = fighting or boss_mode or not ms.can_copy()
+	btn_end.disabled = fighting or formation_mode or ms.day_over or boss_mode
+	btn_prep.disabled = fighting or game_over
+	btn_formation.disabled = fighting or game_over
+	btn_speed.text = "播放 ×%s" % str(SPEEDS[speed_idx])
 	btn_formation.text = "完成佈陣" if formation_mode else "佈陣"
 	build_foe_preview()
 	var gs2 = ms.gs
@@ -467,12 +534,24 @@ func refresh() -> void:
 	queue_redraw()
 
 
+## 找到巢穴之前只說「還沒找到」；找到之後提醒離多遠，晚上別跑太遠
+func _lair_hint() -> String:
+	if not ms.discovered.has(ms.lair):
+		return "巢穴：還沒找到"
+	var d := ms.lair_distance()
+	var late := d / MapState.LATE_STEPS_PER_LIFE
+	return "巢穴：離你 %d 格（天黑時在這裡，決戰共用生命 −%d）" % [d, late]
+
+
 ## 戰鬥播放中每幀只需要更新時間列；完整的 refresh() 會重建所有面板文字
 func update_battle_hud() -> void:
 	if battle == null:
 		return
-	time_label.text = "戰鬥中…　已經打了 %.1f 秒　剩餘時間 %d 秒（時間照常在走）" % [
-		battle_tick * 0.1, int(ms.time_left)]
+	if boss_mode:
+		time_label.text = "決戰中…　已經打了 %.1f 秒" % (battle_tick * 0.1)
+	else:
+		time_label.text = "戰鬥中…　已經打了 %.1f 秒　剩餘時間 %d 秒（時間照常在走）" % [
+			battle_tick * 0.1, int(ms.time_left)]
 
 
 func _refresh_cell_label() -> void:
@@ -523,6 +602,9 @@ func _refresh_cell_label() -> void:
 				elif not preview.is_empty():
 					lines.append("走過去：%d 格，%d 秒" % [
 						preview.size(), int(preview.size() * ms.step_cost())])
+			elif content != null and content.kind == "lair":
+				lines.append("魔王的巢穴！天黑時黴菌之王會在這裡現身。")
+				lines.append("晚上離這裡越遠，趕到時決戰共用生命扣越多。")
 			elif ms.is_wall(hover):
 				lines.append("家具擋住了，過不去。")
 			elif not preview.is_empty():
@@ -576,7 +658,7 @@ func _draw() -> void:
 ## 整片已探索的地面：玩家移動（明暗改變）、探索範圍或時段變了才重建網格；
 ## 每一幀只要用位移跟著攝影機貼一次。以前每幀對畫面內每一格各畫 3～5 次。
 func _draw_ground() -> void:
-	var sig := "%d|%d|%d|%d" % [ms.discovered.size(), ms.seg, ms.pos.x, ms.pos.y]
+	var sig := "%d|%d|%d|%d|%s" % [ms.discovered.size(), ms.seg, ms.pos.x, ms.pos.y, ms.day_over]
 	if sig != _ground_sig:
 		_ground_sig = sig
 		_rebuild_ground()
@@ -726,68 +808,61 @@ func _draw_formation() -> void:
 
 ## 戰鬥就在大地圖上進行：把棋子畫在它們實際站的格子上，由遠到近排序
 func _draw_battle() -> void:
-	var i0 := clampi(floori(battle_tick), 0, battle.frames.size() - 1)
-	var i1 := mini(i0 + 1, battle.frames.size() - 1)
-	var f := clampf(battle_tick - i0, 0.0, 1.0)
-	var items: Array = []
-	for k in battle.units.size():
-		var u: Dictionary = battle.units[k]
-		var a: Array = battle.frames[i0][k]
-		var b: Array = battle.frames[i1][k]
-		var alpha := 1.0
-		if not a[4]:
-			# 死掉之後淡出，不要定格變成屍體
-			var died := _death_tick(k)
-			alpha = clampf(1.0 - (battle_tick - died) / 8.0, 0.0, 1.0)
-			if alpha <= 0.0:
-				continue
-		items.append({
-			"grid": Vector2(a[0], a[1]).lerp(Vector2(b[0], b[1]), f),
-			"u": u, "hp": a[2], "shield": a[3], "energy": a[5], "stun": a[6], "alpha": alpha,
-		})
-	items.sort_custom(func(x, y): return x.grid.x + x.grid.y < y.grid.x + y.grid.y)
+	fx.tick_f = battle_tick
+	var items := fx.gather()
+	var proj := Callable(self, "_fx_project")
+	fx.draw_under(self, items, proj, Callable(self, "_fx_ground"), FIGHTER_R)
 	for it in items:
-		_draw_fighter(it)
+		_draw_fighter(it, proj)
+	fx.draw_over(self, items, proj, font, FIGHTER_R)
 
 
-## 每隻的陣亡時間在換場時整理一次就好。以前每一幀、每一隻都把全部事件從頭掃一遍。
-func _death_tick(uid: int) -> float:
-	if battle != _battle_ref:
-		_battle_ref = battle
-		_death_ticks.clear()
-		for e in battle.events:
-			if e.type == "death" and not _death_ticks.has(e.dst):
-				_death_ticks[e.dst] = float(e.t)
-	return float(_death_ticks.get(uid, 0.0))
+## 戰場格子 → 大地圖上那一格的地面中心（含高度）
+func _fx_ground(grid: Vector2) -> Vector2:
+	var m := grid + Vector2(battle_origin)
+	return to_screen(m, ms.height_of(Vector2i(roundi(m.x), roundi(m.y))))
 
 
-func _draw_fighter(it: Dictionary) -> void:
-	var u: Dictionary = it.u
-	var map_pos: Vector2 = it.grid + Vector2(battle_origin)
-	var h := ms.height_of(Vector2i(roundi(map_pos.x), roundi(map_pos.y)))
-	var ground := to_screen(map_pos, h)
-	var center := ground - Vector2(0, TH * 0.5 + 12)
-	var is_enemy: bool = int(u.team) == 1
-	var r := 15.0
-	_ellipse(ground, r * 0.7, r * 0.34, Color(0, 0, 0, 0.35 * float(it.alpha)))
-	Art.draw_token_base(self, center, r, DB.school_color(u.school), is_enemy, float(u.uid))
+## 棋子立在地面上方
+func _fx_project(grid: Vector2) -> Vector2:
+	return _fx_ground(grid) - Vector2(0, TH * 0.5 + 12)
+
+
+func _draw_fighter(it: Dictionary, proj: Callable) -> void:
+	var alpha := float(it.alpha)
+	var ground := _fx_ground(it.grid)
+	var center: Vector2 = proj.call(it.grid) + fx.offset(it, proj)
+	var is_enemy: bool = int(it.team) == 1
+	var r := FIGHTER_R * (0.75 + 0.25 * alpha)          # 淡出時順便縮小
+	BattleFx.ellipse(self, ground, r * 0.7, r * 0.34, Color(0, 0, 0, 0.35 * alpha))
+	Art.draw_token_base(self, center, r, DB.school_color(it.school), is_enemy, float(it.uid))
 	if is_enemy:
-		Art.draw_enemy(self, str(u.id), center, r * 0.95)
+		Art.draw_enemy(self, str(it.id), center, r * 0.95)
 	else:
-		Art.draw_item(self, str(u.id), center, r * 0.95)
+		Art.draw_item(self, str(it.id), center, r * 0.95)
 	Art.draw_token_ring(self, center, r, is_enemy)
-	if float(it.alpha) < 1.0:
-		draw_circle(center, r + 3, Color(0.05, 0.05, 0.07, 1.0 - float(it.alpha)))
+	var flash := fx.flash(int(it.uid))
+	if flash > 0.0:
+		draw_circle(center, r + 2, Color(1, 1, 1, flash * 0.5))
+	if alpha < 1.0:
+		draw_circle(center, r + 3, Color(0.05, 0.05, 0.07, 1.0 - alpha))
 		return
-	var ratio := clampf(float(it.hp) / maxf(1.0, float(u.max_hp)), 0.0, 1.0)
+	var max_hp := maxf(1.0, float(it.max_hp))
+	var ratio := clampf(float(it.hp) / max_hp, 0.0, 1.0)
 	var bx := center.x - 16.0
 	var by := center.y - r - 6
 	draw_rect(Rect2(bx - 1, by - 1, 34, 6), Color(0, 0, 0, 0.8))
-	draw_rect(Rect2(bx, by, 32 * ratio, 4),
-			Color(0.35, 0.85, 0.45) if not is_enemy else Color(0.9, 0.35, 0.35))
+	var hp_col := Color(0.35, 0.85, 0.45) if not is_enemy else Color(0.9, 0.35, 0.35)
+	if ratio < 0.3:
+		hp_col = hp_col.lerp(Color(1, 0.75, 0.2), 0.6)
+	draw_rect(Rect2(bx, by, 32 * ratio, 4), hp_col)
 	if float(it.shield) > 0.0:
-		draw_rect(Rect2(bx, by - 3.5, 32 * clampf(float(it.shield) / float(u.max_hp), 0.0, 1.0), 2.5),
+		draw_rect(Rect2(bx, by - 3.5, 32 * clampf(float(it.shield) / max_hp, 0.0, 1.0), 2.5),
 				Color(0.95, 0.9, 0.5))
+	var e := clampf(float(it.energy) / 100.0, 0.0, 1.0)
+	draw_rect(Rect2(bx, center.y + r + 2, 32, 2.5), Color(0, 0, 0, 0.8))
+	draw_rect(Rect2(bx, center.y + r + 2, 32 * e, 2.5),
+			Color(1, 0.9, 0.35) if e >= 1.0 else Color(0.4, 0.65, 1.0))
 
 
 ## 只畫落在視窗裡的格子。
@@ -861,6 +936,9 @@ func _draw_content(c: Vector2i) -> void:
 	var seen := ms.is_visible(c)
 	if content.kind == "monster":
 		_draw_monster_group(c, center, seen)
+	elif content.kind == "lair":
+		# 巢穴就算離開視野也照樣畫清楚：找到一次就該記得它在哪
+		Art.draw_cell_icon(self, "lair", center + Vector2(0, TH * 0.3), TW * 0.42)
 	else:
 		if seen:
 			Art.draw_cell_icon(self, content.kind, center, TW * 0.30)
@@ -950,6 +1028,9 @@ func _rebuild_minimap() -> void:
 			"chest": col = Color(1.0, 0.85, 0.3)
 			"rest": col = Color(0.4, 1.0, 0.6)
 			"copier": col = Color(0.85, 0.7, 1.0)
+			"lair":
+				col = Color(0.45, 1.0, 0.35)     # 巢穴：亮綠色大點，找到之後一眼看得到
+				dot = 6
 			"monster":
 				# 點的大小代表怪群規模，一眼看得出哪邊硬
 				dot = {"monster_small": 2, "monster_mid": 4}.get(content.key, 6)
@@ -967,7 +1048,7 @@ func _draw_minimap() -> void:
 	draw_rect(MINI.grow(4), Color(0.4, 0.43, 0.5), false, 1.0)
 	# 地板與物件點都烘在同一張圖裡，貼一次就好。
 	# 以前每一幀對每個探索過的格子各畫一個方塊（最多 2160 次），物件再各畫一個圓。
-	var sig := "%d|%d|%d" % [ms.discovered.size(), ms.seg, ms.cells.size()]
+	var sig := "%d|%d|%d|%s" % [ms.discovered.size(), ms.seg, ms.cells.size(), ms.day_over]
 	if sig != _mini_sig:
 		_mini_sig = sig
 		_rebuild_minimap()
@@ -976,5 +1057,5 @@ func _draw_minimap() -> void:
 	draw_circle(pp, MINI_CELL * 0.8, Color(1, 0.95, 0.4))
 	draw_arc(pp, MINI_CELL * 1.6, 0, TAU, 16, Color(1, 0.95, 0.4, 0.6), 1.0)
 	draw_string(font, MINI.position + Vector2(-2, MINI.size.y + 18),
-			"小地圖：紅=怪　藍=抽屜　金=寶箱　綠=休息　紫=影印",
+			"小地圖：紅=怪　藍=抽屜　金=寶箱　綠=休息　紫=影印　亮綠大點=巢穴",
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(0.62, 0.66, 0.76))

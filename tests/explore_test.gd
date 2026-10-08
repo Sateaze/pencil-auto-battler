@@ -15,13 +15,19 @@ func _init() -> void:
 	var runs := 12
 	var steps: Array = []
 	var secs: Array = []
+	var lates: Array = []
+	var found := 0
 	for s in runs:
 		var r := _play(500 + s, s == 0)
 		if r.won:
 			wins += 1
 		steps.append(r.steps)
 		secs.append(int(r.battle_seconds))
+		lates.append(r.late)
+		if r.found_lair:
+			found += 1
 	print("決戰通關：%d / %d" % [wins, runs])
+	print("白天找到巢穴：%d / %d　遲到扣的共用生命：%s" % [found, runs, str(lates)])
 	print("移動格數：%s" % str(steps))
 	print("戰鬥總秒數：%s" % str(secs))
 	quit()
@@ -48,6 +54,27 @@ func _test_map_integrity() -> void:
 		assert(kinds.has(need), "地圖缺少 %s" % need)
 	assert(not ms.cells.has(ms.pos), "起點不該放東西")
 	print("地圖檢查通過：%d 格、內容 %s" % [covered, str(kinds)])
+	_test_lair()
+
+
+## 巢穴：每局都要有一個、位置隨種子而變、不在起點房間、不在家具上、走得到
+func _test_lair() -> void:
+	var spots: Dictionary = {}
+	for s in 20:
+		var gs := GameState.new()
+		gs.start_new(100 + s)
+		var ms := MapState.new()
+		ms.start(100 + s, gs)
+		var start_room: String = ms.room_at[ms.pos]
+		assert(ms.in_bounds(ms.lair), "種子 %d 沒有生成巢穴" % (100 + s))
+		assert(ms.cells.has(ms.lair) and ms.cells[ms.lair].kind == "lair", "巢穴沒有登記在地圖上")
+		assert(ms.room_at[ms.lair] != start_room, "巢穴不該放在起點的房間（%s）" % start_room)
+		assert(not ms.is_wall(ms.lair), "巢穴放在家具上")
+		assert(not ms.path_to(ms.lair).is_empty(), "種子 %d 的巢穴走不到 %s" % [100 + s, str(ms.lair)])
+		assert(not ms.discovered.has(ms.lair), "巢穴一開局就看得到，應該藏在迷霧裡")
+		spots[ms.room_at[ms.lair]] = true
+	assert(spots.size() >= 4, "20 局的巢穴只出現在 %d 個房間，不夠隨機" % spots.size())
+	print("巢穴檢查通過：20 局分布在 %d 個房間 %s" % [spots.size(), str(spots.keys())])
 
 
 func _test_determinism() -> void:
@@ -101,20 +128,24 @@ func _play(seed_value: int, verbose: bool) -> Dictionary:
 			ms.advance_segment()
 			continue
 		ms.walk(path)
-	# 最終決戰
-	gs.start_boss(ms.hp)
+	# 最終決戰：跟遊戲走同一套 —— 趕到巢穴，在巢穴那塊地圖上打五波
+	var arrival: Dictionary = ms.start_final_battle()
+	if verbose:
+		print("  天黑：離巢穴 %d 格（%s），遲到扣 %d，決戰共用生命 %d" % [
+			int(arrival.distance), "白天有找到" if arrival.found else "白天沒找到",
+			int(arrival.late), gs.life])
 	var guard2 := 0
 	while gs.state == "playing" and guard2 < 20:
 		guard2 += 1
 		_shop_and_arrange(gs)
-		var sim = gs.make_sim()
-		var res: Dictionary = sim.run()
+		var wave_no: int = gs.wave
+		var outcome: String = ms.end_boss_wave(ms.begin_boss_wave())
 		if verbose:
-			print("  決戰第 %d 波：贏=%s 生命 %d" % [gs.wave, res.winner == 0, gs.life])
-		gs.apply_result(res)
+			print("  決戰第 %d 波：%s 生命 %d" % [wave_no, outcome, gs.life])
 	return {"won": gs.state == "won", "steps": ms.steps_taken,
 			"battles": ms.battles_fought, "battle_seconds": ms.battle_seconds,
-			"hp": ms.hp, "mm_earned": ms.mm_earned}
+			"hp": ms.hp, "mm_earned": ms.mm_earned, "late": int(arrival.late),
+			"found_lair": bool(arrival.found)}
 
 
 ## 優先走怪群旁邊；時間剩不到 25% 改去抽屜

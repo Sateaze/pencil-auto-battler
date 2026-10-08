@@ -16,6 +16,8 @@ var failures: Array = []
 
 
 func _init() -> void:
+	# 遊戲開局用 randi() 產生地圖；固定全域種子，每次測的才是同一張地圖，不會時好時壞
+	seed(20261009)
 	root.size = Vector2i(1280, 800)
 	scene = load("res://scenes/main.tscn").instantiate()
 	root.add_child(scene)
@@ -39,6 +41,7 @@ func _init() -> void:
 	await _test_foe_preview()
 	await _test_board_click()
 	_test_corpse_fades()
+	await _test_boss_flow()          # 會讓天黑，要放最後
 
 	if failures.is_empty():
 		print("點擊測試通過 ✔")
@@ -249,7 +252,9 @@ func _test_map_formation() -> void:
 				"走動之後陣形被改掉了：%s → %s" % [snapshot, str(scene.gs.board.keys())])
 		_check(ex.map_cell_of(to) == ms.pos + (to - Vector2i(3, 6)),
 				"陣形沒有跟著玩家移動")
-	# 佈陣時要看得到棋子數據
+	# 佈陣時要看得到棋子數據。
+	# 上面走路時可能經過家人佔用的房間、棋子被「收走」，所以這裡重新放一件確定存在的。
+	scene.gs.board = {to: {"uid": 61, "id": "bat", "star": 1, "bonus_hp": 0.0}}
 	ex.formation_mode = true
 	ex._hover_loc({"t": "board", "c": to})
 	await process_frame
@@ -293,6 +298,8 @@ func _test_foe_preview() -> void:
 	_check(scene.explore.battle != null, "就地開打沒有啟動")
 	if scene.explore.battle == null:
 		return
+	# 曾經的 bug：表演模組要等第一次繪製才拿到戰鬥，開打第一幀就讀到空值當掉
+	_check(scene.explore.fx.sim == scene.explore.battle, "開打後表演模組沒有立刻拿到這場戰鬥")
 	# 用第 0 幀的位置，因為 units 的 cell 在模擬跑完後已經變了
 	var origin: Vector2i = scene.explore.battle_origin
 	var first: Array = scene.explore.battle.frames[0]
@@ -335,21 +342,79 @@ func _test_board_click() -> void:
 		print("斜角棋盤的點擊對位正常")
 
 
-## 最後一隻敵人死掉後，屍體要淡出消失，不能定格留在畫面上
+## 最後一隻敵人死掉後，屍體要淡出消失，不能定格留在畫面上（戰鬥表演是共用的 BattleFx）
 func _test_corpse_fades() -> void:
-	var bv = scene.board_view
-	scene.gs.board = {Vector2i(3, 5): {"uid": 80, "id": "calculator", "star": 3, "bonus_hp": 0.0}}
-	var s = scene.gs.make_sim(scene.gs.build_enemy_descs([{"id": "dust", "count": 1, "mult": 0.2}]), {})
+	var BattleSim = load("res://scripts/sim/battle_sim.gd")
+	var BattleFx = load("res://scripts/battle_fx.gd")
+	var hero := {"id": "calculator", "name": "計算機", "school": "文具", "traits": [], "star": 3,
+			"smult": 3.24, "hp": 3000.0, "atk": 400.0, "aspd": 1.0, "range": 3, "move": 1.0,
+			"armor": 0, "skill": {}, "cell": Vector2i(3, 6), "fx": {}}
+	var foe := {"id": "dust", "name": "灰塵團", "school": "害蟲", "traits": [], "star": 1,
+			"smult": 1.0, "hp": 60.0, "atk": 1.0, "aspd": 0.5, "range": 1, "move": 1.0,
+			"armor": 0, "skill": {}, "cell": Vector2i(3, 3), "fx": {}}
+	var s = BattleSim.new()
+	s.setup(3, [hero], [foe])
 	var res: Dictionary = s.run()
-	bv.sim = s
-	bv._rebuild_cache()
-	bv.tick_f = float(s.frames.size() - 1) + bv.FADE_TICKS + 2.0
+	var fx = BattleFx.new()
+	fx.set_sim(s)
+	fx.tick_f = float(s.frames.size() - 1)          # 剛好停在最後一隻死掉的瞬間
+	var at_death := 0
+	for it in fx.gather():
+		if int(it.team) == 1:
+			at_death += 1
+	fx.tick_f = fx.end_tick()                         # 播放結束（含淡出）
 	var remains := 0
-	for it in bv._gather():
+	for it in fx.gather():
 		if int(it.team) == 1:
 			remains += 1
 	_check(int(res.winner) == 0, "測試前提沒成立：這場應該要打贏")
-	_check(remains == 0, "戰鬥結束後還有 %d 隻敵人屍體留在畫面上" % remains)
-	if remains == 0:
-		print("最後一隻敵人會正常淡出消失")
-	bv.sim = null
+	_check(at_death == 1, "死掉的瞬間應該還看得到牠在淡出（實際 %d 隻）" % at_death)
+	_check(remains == 0, "播放結束後還有 %d 隻敵人屍體留在畫面上" % remains)
+	if remains == 0 and at_death == 1:
+		print("最後一隻敵人會淡出，播完後消失")
+
+
+## 天黑之後：趕到巢穴，在大地圖上打決戰的一波
+func _test_boss_flow() -> void:
+	scene._show_explore()
+	await process_frame
+	scene.gs.board = {Vector2i(3, 6): {"uid": 7, "id": "calculator", "star": 3, "bonus_hp": 0.0},
+			Vector2i(2, 5): {"uid": 8, "id": "fridge", "star": 3, "bonus_hp": 0.0}}
+	ms.seg = 2
+	ms.time_left = 0.0
+	ms.advance_segment()                              # 晚上結束 → 天黑
+	_check(ms.day_over, "時段用完之後應該天黑")
+	scene._on_day_finished()
+	await process_frame
+	_check(scene.boss_active and ex.boss_mode, "天黑之後應該進入最終決戰")
+	_check(maxi(absi(ms.pos.x - ms.lair.x), absi(ms.pos.y - ms.lair.y)) <= 4,
+			"天黑後應該被帶到巢穴附近（玩家 %s，巢穴 %s）" % [str(ms.pos), str(ms.lair)])
+	_check(ms.discovered.has(ms.lair), "到了巢穴應該要看得到它")
+	_check(ex.btn_boss.visible and "第 1 波" in ex.btn_boss.text,
+			"決戰時應該有「開打第 1 波」按鈕：%s" % ex.btn_boss.text)
+
+	# 決戰時不能再移動
+	var before = ms.pos
+	var away: Vector2i = ms.pos + Vector2i(1, 0)
+	if ms.in_bounds(away) and not ms.is_blocked(away):
+		_click(_pixel(away))
+		await process_frame
+		_check(ms.pos == before, "決戰中點地圖不該讓鉛筆移動")
+
+	# 佈陣預覽要預覽的是下一波魔王軍
+	ex.formation_mode = true
+	ex.refresh()
+	_check(not ex.foe_preview.is_empty() and "決戰第 1 波" in ex.preview_label,
+			"決戰時佈陣應該預覽下一波魔王軍（%s）" % ex.preview_label)
+	ex.formation_mode = false
+
+	scene._on_boss_fight()
+	await process_frame
+	_check(scene.phase == "field" and ex.battle != null, "按開打後應該在大地圖上打決戰")
+	var wave_before: int = scene.gs.wave
+	var life_before: int = scene.gs.life
+	scene._finish_field_battle()
+	await process_frame
+	_check(scene.gs.wave > wave_before or scene.gs.state != "playing" or scene.gs.life < life_before,
+			"打完一波之後，波數、生命或勝負應該要有變化")
+	print("決戰流程正常：天黑後到巢穴（%s），在大地圖上打完第 %d 波" % [str(ms.lair), wave_before])
