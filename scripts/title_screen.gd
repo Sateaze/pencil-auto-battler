@@ -42,7 +42,7 @@ func _ready() -> void:
 	help_label.add_theme_font_size_override("font_size", 14)
 	help_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	help_label.visible = false
-	help_label.text = """一、在房子地圖上左鍵點格子移動，每走一格扣時間。點怪群會先走到旁邊，再點一次開打。
+	help_label.text = """一、在房子地圖上左鍵點格子移動，每走一格扣時間。點怪群會先走到旁邊，再點一次開打。滾輪可以放大縮小地圖。
 二、戰鬥全自動，你只在開戰前擺位。戰場地形由你站的那一格決定，繞到別格再打就是換戰場。
 三、同流派／同特徵湊夠件數會啟動羈絆；三件同名同星會合成高一星。
 四、撐過早上、下午、晚上三個時段，天黑後打五波最終決戰。"""

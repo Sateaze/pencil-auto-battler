@@ -1,7 +1,7 @@
 extends Control
 ## 整備畫面上的斜角 2.5D 陣形棋盤（等距投影）。只用來擺陣，戰鬥都在大地圖上打。
 ##
-## 格子畫成菱形、整塊棋盤有厚度側面；棋子直立「站」在格子上並投下橢圓陰影，
+## 格子畫成菱形、整塊棋盤有厚度側面；棋子就是物品本身站在格子上，腳下的圈表示隊伍，
 ## 依前後順序繪製所以會正確遮擋，越後排畫得越小。
 
 const DB = preload("res://scripts/db.gd")
@@ -16,7 +16,7 @@ const TW := 64.0                # 菱形格寬
 const TH := 40.0                # 菱形格高
 const ORIGIN := Vector2(264, 70)
 const SLAB := 16.0              # 棋盤厚度
-const LIFT := 24.0              # 棋子浮在格子上的高度
+const LIFT := 16.0              # 棋子身體中心離地多高（點棋子用）
 const ICON_R := 18.0
 
 var static_units: Array = []    # {cell, id, name, school, star, team, hp, max_hp}
@@ -79,7 +79,8 @@ func _gui_input(ev: InputEvent) -> void:
 func _unit_at(p: Vector2) -> Vector2i:
 	for it in static_units:
 		var pos := Vector2(it.cell)
-		if p.distance_to(cell_center(pos) - Vector2(0, LIFT)) <= ICON_R * _depth_scale(pos) + 3.0:
+		var r := ICON_R * _depth_scale(pos)
+		if p.distance_to(cell_center(pos) - Vector2(0, LIFT * _depth_scale(pos))) <= r + 3.0:
 			return it.cell
 	return Vector2i(-1, -1)
 
@@ -119,27 +120,15 @@ func _draw_board() -> void:
 
 func _draw_unit(it: Dictionary) -> void:
 	var pos := Vector2(it.cell)
-	var s := _depth_scale(pos)
 	var ground := cell_center(pos)
-	var center := ground - Vector2(0, LIFT)
 	var is_enemy: bool = int(it.team) == 1
-	var r := ICON_R * s
-	var pts := PackedVector2Array()
-	for i in 16:
-		var a: float = TAU * i / 16.0
-		pts.append(ground + Vector2(cos(a) * r * 0.78, sin(a) * r * 0.38))
-	draw_colored_polygon(pts, Color(0, 0, 0, 0.32))
-	draw_line(ground, center + Vector2(0, r * 0.7), Color(0, 0, 0, 0.3), 2.0)
-	Art.draw_token_base(self, center, r, DB.school_color(it.school), is_enemy, float(it.cell.x + it.cell.y))
-	if is_enemy:
-		Art.draw_enemy(self, str(it.id), center, r * 0.95)
-	else:
-		Art.draw_item(self, str(it.id), center, r * 0.95)
-	Art.draw_token_ring(self, center, r, is_enemy)
+	var r := ICON_R * _depth_scale(pos)
+	Art.draw_team_ring(self, ground, r, is_enemy)
+	Art.draw_figure(self, str(it.id), ground, r, is_enemy)
 	var star := int(it.get("star", 1))
 	if star > 1:
-		_outlined(center + Vector2(-32, -r - 9), "★".repeat(star), 12, Color(1, 0.85, 0.2))
-	_outlined(center + Vector2(-32, r + 14), str(it.name), 11, Color(0.97, 0.97, 1.0))
+		_outlined(ground + Vector2(-32, -r * 2.0 - 6), "★".repeat(star), 12, Color(1, 0.85, 0.2))
+	_outlined(ground + Vector2(-32, r * 0.5 + 12), str(it.name), 11, Color(0.97, 0.97, 1.0))
 
 
 func _outlined(p: Vector2, text: String, size_px: int, col: Color, width: float = 64.0) -> void:

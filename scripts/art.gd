@@ -4,6 +4,7 @@ extends RefCounted
 ##
 ## 圖示都畫在以 center 為中心、半徑 r 的方形裡（座標範圍 −1 ~ 1），
 ## 所以同一份圖可以用在棋盤（大）與地圖（小）兩種尺寸。
+## 物品與怪物的形狀一律經過 _poly/_rect/_circ/_line/_arc 畫，才能統一描外框、白閃、淡出。
 
 const DB = preload("res://scripts/db.gd")
 
@@ -13,6 +14,24 @@ const PAPER := Color(0.96, 0.94, 0.88)        # 紙張底色
 
 # ── 基本圖形 ────────────────────────────────────────────────
 
+## 畫外框／白閃時把所有顏色換成同一色（a = 0 表示照原色畫），_alpha 是整體透明度（陣亡淡出用）
+static var _ov := Color(0, 0, 0, 0)
+static var _alpha := 1.0
+## 畫面本身的變換（地圖縮放）。draw_figure 會疊在它上面，畫完再還原成它。
+static var base_xf := Transform2D.IDENTITY
+
+
+## 讓接下來畫的物品／怪物／地圖圖示整體變淡（記得但看不到的東西），畫完記得設回 1
+static func set_fade(a: float) -> void:
+	_alpha = a
+
+
+static func _c(col: Color) -> Color:
+	if _ov.a > 0.0:
+		return Color(_ov.r, _ov.g, _ov.b, _ov.a * _alpha)
+	return Color(col.r, col.g, col.b, col.a * _alpha)
+
+
 static func _p(center: Vector2, r: float, x: float, y: float) -> Vector2:
 	return center + Vector2(x, y) * r
 
@@ -21,52 +40,75 @@ static func _poly(c: CanvasItem, center: Vector2, r: float, pts: Array, col: Col
 	var out := PackedVector2Array()
 	for i in range(0, pts.size(), 2):
 		out.append(_p(center, r, pts[i], pts[i + 1]))
-	c.draw_colored_polygon(out, col)
+	c.draw_colored_polygon(out, _c(col))
 
 
 static func _rect(c: CanvasItem, center: Vector2, r: float,
 		x: float, y: float, w: float, h: float, col: Color) -> void:
-	c.draw_rect(Rect2(_p(center, r, x, y), Vector2(w, h) * r), col)
+	c.draw_rect(Rect2(_p(center, r, x, y), Vector2(w, h) * r), _c(col))
 
 
 static func _circ(c: CanvasItem, center: Vector2, r: float,
 		x: float, y: float, rad: float, col: Color) -> void:
-	c.draw_circle(_p(center, r, x, y), rad * r, col)
+	c.draw_circle(_p(center, r, x, y), rad * r, _c(col))
 
 
 static func _line(c: CanvasItem, center: Vector2, r: float,
 		x1: float, y1: float, x2: float, y2: float, col: Color, w := 0.08) -> void:
-	c.draw_line(_p(center, r, x1, y1), _p(center, r, x2, y2), col, w * r)
+	c.draw_line(_p(center, r, x1, y1), _p(center, r, x2, y2), _c(col), w * r)
 
 
-# ── 棋子底座：陰影、紙質底、鉛筆描邊、左上高光 ──────────────
-
-## 畫在棋子圖示底下的那層「貼紙」。回傳圖示可用的半徑。
-static func draw_token_base(c: CanvasItem, center: Vector2, r: float,
-		col: Color, is_enemy: bool, tilt := 0.0) -> void:
-	# 落在桌面上的陰影
-	c.draw_circle(center + Vector2(1.5, r * 0.22), r * 1.02, Color(0, 0, 0, 0.28))
-	var base := col.lerp(Color.BLACK, 0.5) if is_enemy else col.lerp(PAPER, 0.62)
-	c.draw_circle(center, r, base)
-	# 上半部打亮，做出一點立體感
-	c.draw_circle(center - Vector2(0, r * 0.18), r * 0.82, base.lightened(0.12))
-	# 紙質顆粒
-	var grain := Color(0, 0, 0, 0.06)
-	for i in 7:
-		var a: float = TAU * i / 7.0 + tilt
-		var d: float = r * (0.3 + 0.55 * fmod(i * 0.37, 1.0))
-		c.draw_circle(center + Vector2(cos(a), sin(a)) * d, r * 0.07, grain)
-	# 鉛筆描邊：外圈深、內圈淺，看起來像畫在紙上
-	c.draw_arc(center, r, 0, TAU, 30, INK.lerp(col, 0.35), maxf(1.5, r * 0.07))
-	c.draw_arc(center, r * 0.93, 0, TAU, 28, Color(1, 1, 1, 0.18), maxf(1.0, r * 0.04))
-	# 左上高光
-	c.draw_arc(center, r * 0.78, PI * 1.05, PI * 1.55, 12, Color(1, 1, 1, 0.45), maxf(1.0, r * 0.08))
+static func _arc(c: CanvasItem, center: Vector2, r: float, x: float, y: float, rad: float,
+		a0: float, a1: float, col: Color, w: float) -> void:
+	c.draw_arc(_p(center, r, x, y), rad * r, a0, a1, 20, _c(col), w * r)
 
 
-## 隊伍顏色的外框（我方藍、敵方紅）
-static func draw_token_ring(c: CanvasItem, center: Vector2, r: float, is_enemy: bool) -> void:
-	var ring := Color(0.98, 0.42, 0.36) if is_enemy else Color(0.42, 0.78, 1.0)
-	c.draw_arc(center, r + 2.0, 0, TAU, 30, ring, maxf(1.8, r * 0.1))
+# ── 站在地上的棋子 ──────────────────────────────────────────
+
+## 棋子就是物品本身「立」在地上：沒有圓形底座，只描一圈鉛筆外框。
+## foot 是腳底（地面）在畫面上的位置；pose 可以帶：
+##   rot   以腳底為軸的旋轉（揮擊、倒下）     flip  -1 = 左右翻面（面向左邊的敵人）
+##   sx/sy 壓扁拉長（落地、蓄力）             spin  以身體中心自轉（丟出去的球）
+##   alpha 整體透明度                          flash 0～1 受擊白閃
+static func draw_figure(c: CanvasItem, id: String, foot: Vector2, r: float, is_enemy: bool,
+		pose: Dictionary = {}) -> void:
+	var flip := float(pose.get("flip", 1.0))
+	var sc := Vector2(flip * float(pose.get("sx", 1.0)), float(pose.get("sy", 1.0)))
+	c.draw_set_transform_matrix(base_xf * Transform2D(float(pose.get("rot", 0.0)), sc, 0.0, foot)
+			* Transform2D(float(pose.get("spin", 0.0)), Vector2(0, -r * 0.9)))
+	var body := Vector2.ZERO
+	_alpha = float(pose.get("alpha", 1.0))
+	var w := maxf(1.2, r * 0.09)
+	_ov = INK
+	for o in [Vector2(-w, 0), Vector2(w, 0), Vector2(0, -w), Vector2(0, w)]:
+		_shape(c, id, body + o, r, is_enemy)
+	_ov = Color(0, 0, 0, 0)
+	_shape(c, id, body, r, is_enemy)
+	var fl := float(pose.get("flash", 0.0))
+	if fl > 0.0:
+		_ov = Color(1, 1, 1, fl * 0.7)
+		_shape(c, id, body, r, is_enemy)
+		_ov = Color(0, 0, 0, 0)
+	_alpha = 1.0
+	c.draw_set_transform_matrix(base_xf)
+
+
+static func _shape(c: CanvasItem, id: String, center: Vector2, r: float, is_enemy: bool) -> void:
+	if is_enemy:
+		draw_enemy(c, id, center, r)
+	else:
+		draw_item(c, id, center, r)
+
+
+## 腳下的隊伍圈（我方藍、敵方紅），取代以前整顆棋子的彩色外框
+static func draw_team_ring(c: CanvasItem, foot: Vector2, r: float, is_enemy: bool, alpha := 1.0) -> void:
+	var col := Color(0.98, 0.42, 0.36) if is_enemy else Color(0.42, 0.78, 1.0)
+	var pts := PackedVector2Array()
+	for i in 21:
+		var a: float = TAU * i / 20.0
+		pts.append(foot + Vector2(cos(a) * r * 0.85, sin(a) * r * 0.4))
+	c.draw_colored_polygon(pts.slice(0, 20), Color(0, 0, 0, 0.3 * alpha))
+	c.draw_polyline(pts, Color(col, 0.9 * alpha), maxf(1.5, r * 0.11))
 
 
 # ── 物品圖示 ────────────────────────────────────────────────
@@ -103,7 +145,7 @@ static func draw_item(c: CanvasItem, id: String, center: Vector2, r: float) -> v
 			_line(c, center, r, 0.0, -0.75, -0.45, 0.75, dark, 0.12)
 			_line(c, center, r, 0.0, -0.75, 0.45, 0.75, dark, 0.12)
 			_circ(c, center, r, 0.0, -0.75, 0.16, light)
-			c.draw_arc(_p(center, r, 0.0, 0.3), 0.62 * r, PI * 0.15, PI * 0.85, 20, light, 0.07 * r)
+			_arc(c, center, r, 0.0, 0.3, 0.62, PI * 0.15, PI * 0.85, light, 0.07)
 		"tape":
 			_rect(c, center, r, -0.8, -0.35, 1.6, 0.7, light)
 			_circ(c, center, r, -0.38, 0.0, 0.26, PAPER)
@@ -149,8 +191,7 @@ static func draw_item(c: CanvasItem, id: String, center: Vector2, r: float) -> v
 				_line(c, center, r, -0.7, -0.1 + i * 0.14, 0.7, -0.1 + i * 0.14, dark, 0.06)
 			_circ(c, center, r, 0.6, -0.35, 0.08, Color(0.5, 0.9, 1.0))
 			for i in 3:
-				c.draw_arc(_p(center, r, -0.3 + i * 0.3, 0.62), 0.14 * r,
-						PI * 0.1, PI * 0.9, 10, Color(0.6, 0.9, 1.0, 0.8), 0.05 * r)
+				_arc(c, center, r, -0.3 + i * 0.3, 0.62, 0.14, PI * 0.1, PI * 0.9, Color(0.6, 0.9, 1.0, 0.8), 0.05)
 		"fridge":
 			_rect(c, center, r, -0.5, -0.85, 1.0, 1.7, light)
 			_line(c, center, r, -0.5, -0.25, 0.5, -0.25, dark, 0.07)
@@ -161,7 +202,7 @@ static func draw_item(c: CanvasItem, id: String, center: Vector2, r: float) -> v
 			for i in 2:
 				_circ(c, center, r, -0.3 + i * 0.6, -0.08, 0.07, INK)
 				_circ(c, center, r, -0.3 + i * 0.6, 0.12, 0.07, INK)
-			c.draw_arc(_p(center, r, -0.75, 0.55), 0.35 * r, -PI * 0.5, PI * 0.5, 12, dark, 0.08 * r)
+			_arc(c, center, r, -0.75, 0.55, 0.35, -PI * 0.5, PI * 0.5, dark, 0.08)
 
 		# ── 食物 ──
 		"potato":
@@ -173,8 +214,7 @@ static func draw_item(c: CanvasItem, id: String, center: Vector2, r: float) -> v
 			_poly(c, center, r, [-0.65, 0.0, -0.3, -0.55, 0.3, -0.55, 0.65, 0.0,
 					0.35, 0.7, -0.35, 0.7], light)
 			for i in 3:
-				c.draw_arc(_p(center, r, 0.0, 0.1), (0.2 + i * 0.18) * r,
-						PI * 1.05, PI * 1.95, 14, dark, 0.05 * r)
+				_arc(c, center, r, 0.0, 0.1, 0.2 + i * 0.18, PI * 1.05, PI * 1.95, dark, 0.05)
 			_line(c, center, r, 0.0, -0.55, -0.2, -0.95, Color(0.5, 0.75, 0.4), 0.07)
 			_line(c, center, r, 0.0, -0.55, 0.22, -0.9, Color(0.5, 0.75, 0.4), 0.07)
 		"toast":
@@ -188,12 +228,12 @@ static func draw_item(c: CanvasItem, id: String, center: Vector2, r: float) -> v
 			_line(c, center, r, -0.1, -0.5, -0.35, -0.82, Color(0.42, 0.68, 0.33), 0.1)
 		"shavedice":
 			_poly(c, center, r, [-0.55, -0.1, 0.55, -0.1, 0.3, 0.8, -0.3, 0.8], PAPER)
-			c.draw_arc(_p(center, r, 0.0, -0.1), 0.55 * r, PI, TAU, 20, Color(0.75, 0.93, 1.0), 0.5 * r)
+			_arc(c, center, r, 0.0, -0.1, 0.55, PI, TAU, Color(0.75, 0.93, 1.0), 0.5)
 			_circ(c, center, r, -0.2, -0.35, 0.12, Color(0.9, 0.4, 0.5))
 			_circ(c, center, r, 0.22, -0.3, 0.1, Color(0.5, 0.8, 0.5))
 		"leftovers":
 			_poly(c, center, r, [-0.7, -0.05, 0.7, -0.05, 0.48, 0.65, -0.48, 0.65], light)
-			c.draw_arc(_p(center, r, 0.0, -0.05), 0.68 * r, PI, TAU, 20, Color(0.55, 0.5, 0.3), 0.3 * r)
+			_arc(c, center, r, 0.0, -0.05, 0.68, PI, TAU, Color(0.55, 0.5, 0.3), 0.3)
 			_circ(c, center, r, -0.22, -0.3, 0.13, Color(0.6, 0.7, 0.35))
 			_circ(c, center, r, 0.18, -0.26, 0.1, Color(0.72, 0.5, 0.3))
 
@@ -203,11 +243,11 @@ static func draw_item(c: CanvasItem, id: String, center: Vector2, r: float) -> v
 					0.42, -0.6], Color(0.82, 0.6, 0.34))
 			_rect(c, center, r, -0.78, 0.45, 0.3, 0.3, dark)
 		"rope":
-			c.draw_arc(_p(center, r, 0.0, 0.05), 0.6 * r, PI * 0.85, PI * 2.15, 24, light, 0.09 * r)
+			_arc(c, center, r, 0.0, 0.05, 0.6, PI * 0.85, PI * 2.15, light, 0.09)
 			_rect(c, center, r, -0.72, -0.72, 0.22, 0.5, dark)
 			_rect(c, center, r, 0.5, -0.72, 0.22, 0.5, dark)
 		"racket":
-			c.draw_arc(_p(center, r, 0.08, -0.28), 0.52 * r, 0, TAU, 24, light, 0.11 * r)
+			_arc(c, center, r, 0.08, -0.28, 0.52, 0, TAU, light, 0.11)
 			for i in 3:
 				_line(c, center, r, -0.38 + i * 0.3, -0.72, -0.38 + i * 0.3, 0.14, PAPER, 0.035)
 				_line(c, center, r, -0.44, -0.66 + i * 0.3, 0.6, -0.66 + i * 0.3, PAPER, 0.035)
@@ -220,7 +260,7 @@ static func draw_item(c: CanvasItem, id: String, center: Vector2, r: float) -> v
 			_circ(c, center, r, 0.0, 0.0, 0.78, Color(0.88, 0.47, 0.2))
 			_line(c, center, r, -0.78, 0.0, 0.78, 0.0, INK, 0.06)
 			_line(c, center, r, 0.0, -0.78, 0.0, 0.78, INK, 0.06)
-			c.draw_arc(center, 0.78 * r, 0, TAU, 28, INK, 0.05 * r)
+			_arc(c, center, r, 0.0, 0.0, 0.78, 0, TAU, INK, 0.05)
 
 		# ── 清潔用品 ──
 		"broom":

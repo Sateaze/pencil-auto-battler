@@ -8,19 +8,21 @@ extends RefCounted
 ## 投影由使用的畫面自己提供（project：格子座標 → 棋子在畫面上的中心），
 ## 所以同一份表演可以放在任何地圖上。以前這些只寫在 8×8 棋盤裡，大地圖戰鬥是簡化版。
 
+const ItemMoves = preload("res://scripts/item_moves.gd")
+
 const FLASH_TICKS := 2          # 受擊白閃持續幾個 tick
 const SHAKE_TICKS := 3          # 受擊震動
-const LUNGE_TICKS := 3          # 普攻撲向前
-const FADE_TICKS := 8           # 陣亡淡出
-const PROJ_TICKS := 2.5         # 遠程彈道飛行時間
+const FADE_TICKS := 8           # 陣亡淡出（同時倒下）
+const SUPPORT_SKILLS := ["heal", "heal_nearby", "shield_allies"]
 
 var sim = null
 var tick_f := 0.0
 var anim_t := 0.0               # 待機浮動用的連續時間，和戰鬥進度無關
 
 var _death: Dictionary = {}     # uid -> 陣亡的 tick
-var _acts: Dictionary = {}      # uid -> [{t, dst}]，出手紀錄
+var _acts: Dictionary = {}      # uid -> [出手]，依時間排序；出手 = {t, rel, T, dst, style, eff, big, sd}
 var _hits: Dictionary = {}      # uid -> [t, ...]，被打到的 tick
+var _poses: Dictionary = {}     # uid -> 這一幀的姿勢（每幀 gather 時清掉）
 
 
 ## 換一場戰鬥：把事件整理成「每個單位的出手／受擊／陣亡」表，之後每幀查起來很快
@@ -30,6 +32,7 @@ func set_sim(s) -> void:
 	_death.clear()
 	_acts.clear()
 	_hits.clear()
+	_poses.clear()
 	if s == null:
 		return
 	for e in s.events:
@@ -37,17 +40,52 @@ func set_sim(s) -> void:
 			"death":
 				if not _death.has(e.dst):
 					_death[e.dst] = float(e.t)
-			"hit", "skill":
-				if not _acts.has(e.src):
-					_acts[e.src] = []
-				_acts[e.src].append({"t": float(e.t), "dst": int(e.dst)})
-				if not _hits.has(e.dst):
-					_hits[e.dst] = []
-				_hits[e.dst].append(float(e.t))
-			"burn":
-				if not _hits.has(e.dst):
-					_hits[e.dst] = []
-				_hits[e.dst].append(float(e.t))
+			"hit", "miss":
+				_add_act(e, false)
+				if e.type == "hit":
+					_add_hit(e)
+			"cast":
+				_add_act(e, true)
+			"skill", "burn":
+				_add_hit(e)
+
+
+func _add_hit(e: Dictionary) -> void:
+	if not _hits.has(e.dst):
+		_hits[e.dst] = []
+	_hits[e.dst].append(float(e.t))
+
+
+## 一次出手（普攻或施放技能）。飛行時間用出手當下兩邊的距離算好存起來，
+## 播放中單位移動也不會讓動畫時間跳來跳去。
+func _add_act(e: Dictionary, is_cast: bool) -> void:
+	var u: Dictionary = sim.units[e.src]
+	var mv: Array = ItemMoves.move_of(str(u.id), int(u.team) == 1)
+	var style: String = mv[0]
+	var eff: String = mv[1]
+	if is_cast and str(u.get("skill", {}).get("type", "")) in SUPPORT_SKILLS:
+		style = "buff"
+		eff = ""
+	var fr: Array = sim.frames[clampi(int(e.t), 0, sim.frames.size() - 1)]
+	var dist := Vector2(fr[e.src][0], fr[e.src][1]).distance_to(Vector2(fr[e.dst][0], fr[e.dst][1]))
+	var travel := ItemMoves.travel(eff, dist)
+	if not _acts.has(e.src):
+		_acts[e.src] = []
+	_acts[e.src].append({"t": float(e.t), "rel": float(e.t) - travel, "T": travel, "dst": int(e.dst),
+			"style": style, "eff": eff, "big": is_cast, "sd": int(e.t) * 7 + int(e.src)})
+
+
+## 目前（或最近一次）的出手：已經開始蓄力的裡面最新的那一次；還沒出過手就回傳第一次（拿來決定面向）
+func _latest_act(uid: int):
+	var list: Array = _acts.get(uid, [])
+	var best = null
+	for a in list:
+		if float(a.rel) - ItemMoves.WIND > tick_f:
+			break
+		best = a
+	if best == null and not list.is_empty():
+		return list[0]
+	return best
 
 
 ## 模擬在「最後一隻死掉」那一刻就停了，播放要多留一段給牠淡出，不然屍體會定格
@@ -58,6 +96,7 @@ func end_tick() -> float:
 ## 這一幀每個單位的狀態：位置已內插；陣亡的帶淡出 alpha，完全淡掉的不回傳。
 ## 已經由遠到近排好（grid.x + grid.y 由小到大），照順序畫就會正確遮擋。
 func gather() -> Array:
+	_poses.clear()
 	var out: Array = []
 	if sim == null:
 		return out
@@ -80,29 +119,51 @@ func gather() -> Array:
 			"name": u.name, "school": u.school, "star": u.star, "team": u.team,
 			"hp": a[2], "max_hp": u.max_hp, "shield": a[3], "alive": a[4],
 			"energy": a[5], "stun": a[6], "alpha": alpha, "range": u.range,
+			"moving": a[0] != b[0] or a[1] != b[1],
 		})
 	out.sort_custom(func(x, y): return x.grid.x + x.grid.y < y.grid.x + y.grid.y)
 	return out
 
 
-## 待機浮動 + 普攻撲向前 + 受擊震動，疊在棋子的中心點上
-func offset(it: Dictionary, project: Callable) -> Vector2:
+## 這一幀的姿勢 {off, rot, flip, sx, sy}：待機、走路小跳、物品自己的出手動作、受擊震動、陣亡倒下。
+## off 疊在棋子位置上；rot 以腳底為軸；flip = -1 表示面向左邊。
+func pose(it: Dictionary, project: Callable) -> Dictionary:
 	var uid := int(it.uid)
+	if _poses.has(uid):
+		return _poses[uid]
 	var off := Vector2(0, sin(anim_t * 2.4 + uid * 0.9) * 1.6)
+	if str(it.id) == "basketball" and int(it.team) == 0:
+		off = Vector2(0, -absf(sin(anim_t * 5.0 + uid)) * 5.0)          # 籃球待機時在原地運球
+	if bool(it.get("moving", false)):
+		off.y -= absf(sin(tick_f * PI * 0.5)) * 5.0                       # 走路時一跳一跳
+	var p := {"off": off, "rot": 0.0, "spin": 0.0, "flip": 1.0, "sx": 1.0, "sy": 1.0}
 	var here: Vector2 = project.call(it.grid)
-	for a in _acts.get(uid, []):
-		var age: float = tick_f - float(a.t)
-		if age < 0.0 or age > LUNGE_TICKS:
-			continue
-		var dir: Vector2 = (project.call(grid_of(int(a.dst))) - here).normalized()
-		var reach: float = 9.0 if int(it.range) <= 1 else 4.0
-		off += dir * reach * sin((1.0 - age / LUNGE_TICKS) * PI)
+	var act = _latest_act(uid)
+	if act != null:
+		var to: Vector2 = project.call(grid_of(int(act.dst))) - here
+		p.flip = -1.0 if to.x < -0.5 else 1.0
+		var s: float = tick_f - float(act.rel)
+		if s >= -ItemMoves.WIND and s <= ItemMoves.FOLLOW:
+			var m: Dictionary = ItemMoves.pose(str(act.style), s, to, bool(act.big))
+			p.off += m.off
+			p.rot = float(m.rot) * p.flip
+			p.spin = float(m.spin) * p.flip
+			p.sx = m.sx
+			p.sy = m.sy
 	for t in _hits.get(uid, []):
 		var age2: float = tick_f - float(t)
 		if age2 < 0.0 or age2 > SHAKE_TICKS:
 			continue
-		off += Vector2(sin(age2 * 9.0), cos(age2 * 7.0)) * 3.5 * (1.0 - age2 / SHAKE_TICKS)
-	return off
+		p.off += Vector2(sin(age2 * 9.0), cos(age2 * 7.0)) * 3.5 * (1.0 - age2 / SHAKE_TICKS)
+	var alpha := float(it.get("alpha", 1.0))
+	if alpha < 1.0:
+		p.rot = -p.flip * minf(1.0, (1.0 - alpha) * 2.5) * 1.45          # 往後倒下，再慢慢淡掉
+	_poses[uid] = p
+	return p
+
+
+func offset(it: Dictionary, project: Callable) -> Vector2:
+	return pose(it, project).off
 
 
 ## 最近幾個 tick 內有沒有被打到（0～1），用來疊白閃
@@ -128,9 +189,6 @@ func draw_under(c: CanvasItem, items: Array, project: Callable, ground: Callable
 		if e.t < now - 3 or e.t > now:
 			continue
 		match e.type:
-			"skill":
-				if e.t >= now - 1 and pos_of.has(e.src) and pos_of.has(e.dst):
-					c.draw_line(pos_of[e.src], pos_of[e.dst], Color(1, 0.85, 0.25, 0.75), 3.0)
 			"cast":
 				var k: float = clampf((tick_f - float(e.t)) / 4.0, 0.0, 1.0)
 				ellipse(c, ground.call(grid_of(int(e.src))), (r + 6) * (1.0 + k * 1.4),
@@ -141,10 +199,23 @@ func draw_under(c: CanvasItem, items: Array, project: Callable, ground: Callable
 						(r + 4) * 0.5 * (1.0 + k2), Color(0.4, 1.0, 0.55, (1.0 - k2) * 0.35))
 
 
-## 畫在棋子上面的特效：遠程彈道（拋物線）、傷害數字、技能名稱、暈眩星星
+## 畫在棋子上面的特效：每件物品打出去的東西、傷害數字、技能名稱、暈眩星星
 func draw_over(c: CanvasItem, items: Array, project: Callable, font: Font, r: float) -> void:
 	var pos_of := _positions(items, project)
 	var now := floori(tick_f)
+	for it in items:
+		if float(it.alpha) < 1.0:
+			continue
+		for a in _acts.get(it.uid, []):
+			var s: float = tick_f - float(a.t)                  # 特效以命中為 0
+			if s < -ItemMoves.WIND - float(a.T):
+				break
+			if s > ItemMoves.FOLLOW:
+				continue
+			var dst := int(a.dst)
+			var b: Vector2 = pos_of[dst] if pos_of.has(dst) else project.call(grid_of(dst))
+			ItemMoves.draw_effect(c, font, str(a.style), str(a.eff), pos_of[it.uid], b, s, float(a.T),
+					bool(a.big), int(a.sd))
 	for it in items:
 		if it.stun and float(it.alpha) >= 1.0:
 			var center: Vector2 = pos_of[it.uid]
@@ -156,13 +227,6 @@ func draw_over(c: CanvasItem, items: Array, project: Callable, font: Font, r: fl
 		var age_f: float = tick_f - float(e.t)
 		if age_f < 0.0 or age_f > 8.0:
 			continue
-		if e.type == "hit" and age_f <= PROJ_TICKS and pos_of.has(e.src) and pos_of.has(e.dst):
-			if int(sim.units[e.src].range) > 1:
-				var k: float = age_f / PROJ_TICKS
-				var p: Vector2 = Vector2(pos_of[e.src]).lerp(pos_of[e.dst], k)
-				p.y -= sin(k * PI) * 10.0
-				c.draw_circle(p, 8.0 * (1.0 - k * 0.4), Color(1, 0.9, 0.5, 0.25))
-				c.draw_circle(p, 4.5 * (1.0 - k * 0.4), Color(1, 0.96, 0.75, 1.0 - k * 0.3))
 		var age: int = now - int(e.t)
 		if age < 0 or age > 7 or not pos_of.has(e.dst):
 			continue

@@ -43,6 +43,7 @@ func _init() -> void:
 	await _test_foe_preview()
 	await _test_board_click()
 	_test_corpse_fades()
+	await _test_zoom()               # 會走動改變位置，放在佈陣相關測試之後
 	await _test_boss_flow()          # 會讓天黑，要放最後
 
 	if failures.is_empty():
@@ -61,10 +62,11 @@ func _check(ok: bool, msg: String) -> void:
 
 ## 格子在畫面上的位置，一律跟 ExploreScreen 拿，不要在測試裡自己算。
 ## 攝影機是平滑跟隨的，會在「算好座標」和「事件被處理」之間繼續移動，
-## 所以先把它貼齊目標，點擊才對得準。
+## 所以先把它貼齊目標，點擊才對得準。回傳的是套用滾輪縮放之後、滑鼠真正要點的位置。
 func _pixel(cell: Vector2i) -> Vector2:
 	ex.cam = ex._cam_target()
-	return ex.to_screen(Vector2(cell), ms.height_of(cell))
+	ex.zoom = ex.zoom_want
+	return ex._zoom_xf() * ex.to_screen(Vector2(cell), ms.height_of(cell))
 
 
 func _click(pos: Vector2) -> void:
@@ -88,7 +90,8 @@ func _test_map_click() -> void:
 		if not _unoccluded(c):
 			continue
 		tested += 1
-		var back: Vector2i = ex.pick_cell(_pixel(c))
+		_pixel(c)
+		var back: Vector2i = ex.pick_cell(ex.to_screen(Vector2(c), ms.height_of(c)))
 		if back != c:
 			bad.append("%s→%s" % [str(c), str(back)])
 	_check(tested >= 20, "可測的無遮擋格子只有 %d 個，樣本太少" % tested)
@@ -106,6 +109,47 @@ func _test_map_click() -> void:
 	await process_frame
 	_check(ms.pos != before, "左鍵點地圖沒有讓鉛筆移動（忘了拿掉 --headless 會出現假失敗）")
 	print("點 %s（%d 格）後移動到 %s" % [str(target), steps, str(ms.pos)])
+
+
+## 滾輪縮放：滾輪要改變倍率，而且放大／縮小之後點格子還是要點得準
+func _test_zoom() -> void:
+	scene._show_explore()             # 前一個測試停在整備畫面
+	await process_frame
+	var z0: float = ex.zoom_want
+	_wheel(MOUSE_BUTTON_WHEEL_UP, 5)
+	await process_frame
+	var zoomed: float = ex.zoom_want
+	_check(zoomed > z0 * 1.5, "滾輪往上沒有放大地圖（%.2f → %.2f）" % [z0, zoomed])
+	for want in [zoomed, 0.7]:
+		ex.zoom_want = want
+		var target := _walkable_target()
+		if target.x < 0:
+			_check(false, "找不到可以走過去的格子來測縮放後的點擊")
+			return
+		var p := _pixel(target)
+		var picked: Vector2i = ex.pick_cell(ex._unzoom(p))
+		_check(picked == target or not _unoccluded(target),
+				"縮放 ×%.2f 時點 %s 卻選到 %s" % [want, str(target), str(picked)])
+		var before = ms.pos
+		_click(p)
+		await process_frame
+		await process_frame
+		_check(ms.pos != before, "縮放 ×%.2f 時左鍵點地圖沒有移動" % want)
+	print("滾輪縮放：放大到 ×%.2f、縮小到 ×0.70 都點得準" % zoomed)
+	ex.zoom_want = ex.ZOOM_DEFAULT
+	ex.zoom = ex.ZOOM_DEFAULT
+
+
+func _wheel(button: int, notches: int) -> void:
+	var center: Vector2 = ex.VIEW.get_center()
+	for i in notches:
+		for pressed in [true, false]:
+			var ev := InputEventMouseButton.new()
+			ev.button_index = button
+			ev.pressed = pressed
+			ev.position = center
+			ev.global_position = center
+			root.push_input(ev)
 
 
 ## 前方幾格內沒有比它更高的格子，才不會被蓋住

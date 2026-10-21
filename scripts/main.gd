@@ -53,6 +53,7 @@ var fade: ColorRect
 var _demo := false
 var _frames := 0
 var _demo_boss_frame := -1
+var _shots_taken: Dictionary = {}      # 這次 demo 已經存過的截圖（不看檔案在不在，舊圖才不會擋住新圖）
 
 
 func _ready() -> void:
@@ -650,18 +651,20 @@ func _demo_tick() -> void:
 		var monsters: Array = ms.adjacent_monsters()
 		if not monsters.is_empty():
 			_on_attack_requested(monsters[0])
-	elif phase == "field" and explore.battle_tick > 25.0 \
-			and not FileAccess.file_exists("res://shots/field_battle.png"):
+		explore.zoom_by(5.0)                     # 拉近看戰鬥（順便示範滾輪縮放）
+		explore.zoom = explore.zoom_want
+	elif phase == "field" and explore.battle_tick > 25.0 and not _shots_taken.has("field_battle"):
 		_save_shot("field_battle")
 	elif not boss_active and phase == "explore" and _frames > 90:
+		explore.zoom_want = explore.ZOOM_DEFAULT
+		explore.zoom = explore.ZOOM_DEFAULT
 		_save_shot("result")
 		_on_day_finished()                     # 直接天黑，示範巢穴與決戰
 		_demo_boss_frame = _frames
 	elif boss_active and _frames == _demo_boss_frame + 6:
 		_save_shot("boss_lair")
 		_on_boss_fight()
-	elif boss_active and phase == "field" and explore.battle_tick > 30.0 \
-			and not FileAccess.file_exists("res://shots/boss_battle.png"):
+	elif boss_active and phase == "field" and explore.battle_tick > 30.0 and not _shots_taken.has("boss_battle"):
 		_save_shot("boss_battle")
 		get_tree().quit()
 	elif _frames > 900:
@@ -690,5 +693,6 @@ func _approach_cell(target: Vector2i) -> Vector2i:
 
 
 func _save_shot(shot_name: String) -> void:
+	_shots_taken[shot_name] = true
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://shots"))
 	get_viewport().get_texture().get_image().save_png("res://shots/%s.png" % shot_name)
